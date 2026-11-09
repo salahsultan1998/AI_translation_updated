@@ -113,8 +113,7 @@ class RetryApiTests(unittest.TestCase):
         self.store = self.app.extensions['jobs']
 
     def test_retry_api_requires_csrf_and_owner_and_uses_original_settings(self):
-        body = {'project_id': 'direct', 'language': 'english', 'manual_rows': [{'source_text': 'hello'}],
-                'custom_instructions': 'original'}
+        body = {'project_id': 'direct', 'language': 'english', 'manual_rows': [{'source_text': 'hello'}]}
         created = self.client.post('/api/jobs', json=body, headers=self.headers)
         self.assertEqual(created.status_code, 202)
         job_id = created.get_json()['id']
@@ -130,7 +129,8 @@ class RetryApiTests(unittest.TestCase):
         self.assertEqual(result.status_code, 202)
         self.assertEqual(result.get_json()['id'], job_id)
         claimed = self.store.claim('replacement')
-        self.assertEqual(claimed['settings']['custom_instructions'], 'original')
+        from translation_app.services.projects import load_prompt_pair
+        self.assertEqual(claimed['settings']['instructions'], load_prompt_pair('direct', 'english')['instructions'])
         self.assertEqual(claimed['settings']['batch_size'], 10)
         self.assertFalse(claimed['settings']['use_exact_memory'])
         self.assertEqual(self.client.post(f'/api/jobs/{job_id}/retry', headers=self.headers).status_code, 400)

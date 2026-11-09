@@ -147,9 +147,8 @@ def create_job():
     size = data.get('batch_size', 10)
     if type(size) is not int or not 1 <= size <= 50:
         raise ValueError('每批行数必须在 1 到 50 之间')
-    instructions = data.get('custom_instructions', '')
-    if not isinstance(instructions, str) or len(instructions) > 20000:
-        raise ValueError('自定义说明过长')
+    if data.get('custom_instructions'):
+        raise ValueError('请先在提示词配置中保存 Instructions，再提交翻译')
     if 'manual_rows' in data:
         manual = data['manual_rows']
         if not isinstance(manual, list) or not 1 <= len(manual) <= 10000:
@@ -189,9 +188,10 @@ def create_job():
     if len(raw) > current_app.config['MAX_CONTENT_LENGTH']:
         raise ValueError('输入内容过大')
     settings = {'model': model, 'batch_size': size, 'use_smart_budget': bool(data.get('use_smart_budget', True)),
-                'custom_instructions': instructions, 'use_exact_memory': data.get('use_exact_memory') is True}
-    from translation_app.services.projects import compose_prompt
-    settings['system_prompt'] = compose_prompt(project_id, language)
+                'use_exact_memory': data.get('use_exact_memory') is True}
+    from translation_app.services.projects import load_prompt_pair
+    pair = load_prompt_pair(project_id, language)
+    settings.update(system_prompt=pair['system'], instructions=pair['instructions'])
     if not project['direct']:
         settings['access_token'] = g.user['access_token']
     store = current_app.extensions['jobs']
@@ -297,18 +297,6 @@ def manual_result(job_id):
                  'translated_text': row.get(target) or ''} for row in reader]
     return jsonify(rows=rows)
 
-
-@api.route('/projects/<project_id>/profile', methods=['GET', 'POST'])
-def profile(project_id):
-    project = scoped_project(project_id)
-    db = engine()
-    if request.method == 'GET':
-        return jsonify(profile=db.get_game_profile(project['database_id']))
-    value = payload().get('profile')
-    if not isinstance(value, str) or len(value) > 30000:
-        raise ValueError('项目说明无效或过长')
-    db.upsert_game_profile(project['database_id'], value)
-    return jsonify(profile=value)
 
 
 def valid_pairs(value):

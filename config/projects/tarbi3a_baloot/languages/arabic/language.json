@@ -2,5 +2,6 @@
   "id": "arabic",
   "name": "阿拉伯语",
   "database_name": "Arabic",
-  "instructions": "instructions.md"
+  "instructions": "instructions.md",
+  "system_prompt": "system.md"
 }

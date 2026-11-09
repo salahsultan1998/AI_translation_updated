@@ -65,7 +65,7 @@ class KnowledgePreloadTests(unittest.TestCase):
         self.assertEqual(created.status_code, 202)
 
         def provider(rows, prompt, language, context, settings):
-            self.assertIn('Friendly game', context)
+            self.assertNotIn('Friendly game', context)
             self.assertIn('إبلاغ', context)
             return [{'row_id': row[0], 'translated_text': 'اضغط للإبلاغ'} for row in rows]
 
@@ -105,11 +105,12 @@ class KnowledgePreloadTests(unittest.TestCase):
         self.assertEqual(self.create_database.call_count, 2)
 
     def test_failed_preload_returns_error_and_can_be_retried(self):
-        self.engine.get_game_profile.side_effect = RuntimeError('private database details')
+        original = self.engine.client.table.side_effect
+        self.engine.client.table.side_effect = RuntimeError('private database details')
         failed = self.preload()
         self.assertEqual(failed.status_code, 500)
         self.assertNotIn('private database details', failed.text)
-        self.engine.get_game_profile.side_effect = None
+        self.engine.client.table.side_effect = original
         self.assertEqual(self.preload().status_code, 200)
         self.assertEqual(self.create_database.call_count, 2)
 

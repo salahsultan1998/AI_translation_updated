@@ -10,9 +10,13 @@ from unittest.mock import patch
 from openpyxl import Workbook, load_workbook
 
 from translation_app.services import projects
-from translation_app.services.projects import compose_prompt, get_project, list_languages, list_projects, validate_selection
+from translation_app.services.projects import load_prompt_pair, get_project, list_languages, list_projects, validate_selection
 from translation_app.services.spreadsheets import CSV_SHEET, inspect_file, read_mapped_rows
 from translation_app.services.translation import _prepare_batches, translate_file
+
+
+def prompt_text(project, language):
+    return '\n\n'.join(load_prompt_pair(project, language).values())
 
 
 class ProjectConfigurationTests(unittest.TestCase):
@@ -26,26 +30,31 @@ class ProjectConfigurationTests(unittest.TestCase):
                 validate_selection(project, language)
 
     def test_project_specific_prompt_does_not_leak(self):
-        self.assertIn('GLOSSARY CASING RULES', compose_prompt('s06', 'english'))
-        self.assertNotIn('GLOSSARY CASING RULES', compose_prompt('direct', 'english'))
-        self.assertIn('Gulf card-playing culture', compose_prompt('baloot_challenges', 'arabic'))
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp) / 'config'
+            shutil.copytree(projects.CONFIG_ROOT, config)
+            (config / 'projects/s06/languages/english/instructions.md').write_text('S06_ONLY_RULE')
+            with patch.object(projects, 'CONFIG_ROOT', config):
+                self.assertIn('S06_ONLY_RULE', prompt_text('s06', 'english'))
+                self.assertNotIn('S06_ONLY_RULE', prompt_text('direct', 'english'))
+                self.assertNotIn('S06_ONLY_RULE', prompt_text('baloot_challenges', 'arabic'))
 
     def test_language_changes_are_private_to_the_project(self):
         with tempfile.TemporaryDirectory() as temp:
             config = Path(temp) / 'config'
             shutil.copytree(projects.CONFIG_ROOT, config)
             with patch.object(projects, 'CONFIG_ROOT', config):
-                original = compose_prompt('tarbi3a_baloot', 'arabic')
-                direct = compose_prompt('direct', 'arabic')
+                original = prompt_text('tarbi3a_baloot', 'arabic')
+                direct = prompt_text('direct', 'arabic')
                 rules = config / 'projects/sawa/languages/arabic/instructions.md'
                 rules.write_text(rules.read_text(encoding='utf-8') + '\nSAWA_ONLY_RULE', encoding='utf-8')
                 metadata_path = rules.parent / 'language.json'
                 metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
                 metadata['name'] = '项目专属阿拉伯语'
                 metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding='utf-8')
-                self.assertIn('SAWA_ONLY_RULE', compose_prompt('sawa', 'arabic'))
-                self.assertEqual(original, compose_prompt('tarbi3a_baloot', 'arabic'))
-                self.assertEqual(direct, compose_prompt('direct', 'arabic'))
+                self.assertIn('SAWA_ONLY_RULE', prompt_text('sawa', 'arabic'))
+                self.assertEqual(original, prompt_text('tarbi3a_baloot', 'arabic'))
+                self.assertEqual(direct, prompt_text('direct', 'arabic'))
                 self.assertEqual(list_languages('sawa')[0]['name'], '项目专属阿拉伯语')
                 self.assertNotEqual(list_languages('direct')[0]['name'], '项目专属阿拉伯语')
                 from translation_app.web.pages import project_view
@@ -59,15 +68,16 @@ class ProjectConfigurationTests(unittest.TestCase):
             french = project_dir / 'languages/french'
             french.mkdir()
             (french / 'language.json').write_text(json.dumps({
-                'id': 'french', 'name': '法语', 'database_name': 'French', 'instructions': 'instructions.md'
+                'id': 'french', 'name': '法语', 'database_name': 'French', 'system_prompt': 'system.md', 'instructions': 'instructions.md'
             }, ensure_ascii=False), encoding='utf-8')
+            (french / 'system.md').write_text('Translate into French', encoding='utf-8')
             (french / 'instructions.md').write_text('S06 法语规则', encoding='utf-8')
             config_path = project_dir / 'project.json'
             project = json.loads(config_path.read_text(encoding='utf-8'))
             project['languages'].append('french')
             config_path.write_text(json.dumps(project), encoding='utf-8')
             with patch.object(projects, 'CONFIG_ROOT', config):
-                self.assertIn('S06 法语规则', compose_prompt('s06', 'french'))
+                self.assertIn('S06 法语规则', prompt_text('s06', 'french'))
                 self.assertEqual(validate_selection('s06', 'french')[1]['database_name'], 'French')
                 with self.assertRaises(ValueError):
                     validate_selection('direct', 'french')
@@ -186,13 +196,14 @@ class SpreadsheetTranslationTests(unittest.TestCase):
             self.assertEqual(language['database_name'], 'English')
             return {'英雄': {'target': 'Hero', 'note': '专用名词'}}, {}, 'Game tone'
         def provider(rows, system, language, context, settings):
-            received.append((system, context))
+            received.append((system, context, settings['instructions']))
             return [{'row_id':rows[0][0], 'translated_text':'Hero {0}'}]
-        translate_file(source, output, 's06', 'english', {CSV_SHEET:{'source':'source','target':'target'}}, {},
+        translate_file(source, output, 's06', 'english', {CSV_SHEET:{'source':'source','target':'target'}}, {'instructions': 'S06 English instructions'},
                        provider=provider, resource_loader=resources)
-        self.assertIn('GAME TONE', received[0][1])
+        self.assertNotIn('GAME TONE', received[0][1])
+        self.assertNotIn('Game tone', received[0][1])
         self.assertIn('英雄 : Hero', received[0][1])
-        self.assertIn('GLOSSARY CASING RULES', received[0][0])
+        self.assertEqual('S06 English instructions', received[0][2])
 
     def test_progress_is_visible_before_loading_project_context(self):
         source, output = self.folder/'source.csv', self.folder/'output.csv'

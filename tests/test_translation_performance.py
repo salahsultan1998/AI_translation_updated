@@ -1,6 +1,7 @@
 import csv
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -12,6 +13,7 @@ from unittest.mock import patch
 from openpyxl import Workbook, load_workbook
 
 from translation_app.services.translation import _ContextIndex, translate_file
+from translation_app.services import provider_runtime
 from translation_app.services.translation_state import fingerprint
 
 
@@ -65,6 +67,36 @@ class TranslationPerformanceTests(unittest.TestCase):
         with self.output.open(encoding='utf-8-sig', newline='') as handle:
             self.assertEqual([row['target'] for row in csv.DictReader(handle)],
                              [f'translated row {i}' for i in range(6)])
+
+    def test_default_allows_fifty_requests_and_queues_remaining_batch(self):
+        self.write([(f'row {i}', '', '') for i in range(51)])
+        barrier = threading.Barrier(50)
+        lock = threading.Lock()
+        active, peak, calls = 0, 0, 0
+
+        def provider(rows, prompt, language, context, settings):
+            nonlocal active, peak, calls
+            with provider_runtime.request_slot(settings):
+                with lock:
+                    active += 1
+                    peak = max(peak, active)
+                    calls += 1
+                try:
+                    if rows[0][0] < 50:
+                        barrier.wait(timeout=10)
+                    return self.provider(rows)
+                finally:
+                    with lock:
+                        active -= 1
+
+        with patch.dict(os.environ):
+            os.environ.pop('TRANSLATION_CONCURRENCY', None)
+            os.environ.pop('TRANSLATION_GLOBAL_CONCURRENCY', None)
+            result = self.translate({'batch_size': 1, '_limiter_root': str(self.root / 'slots')}, provider)
+        self.assertEqual((result['concurrency'], result['batches'], calls, peak), (50, 51, 51, 50))
+        with self.output.open(encoding='utf-8-sig', newline='') as handle:
+            self.assertEqual([row['target'] for row in csv.DictReader(handle)],
+                             [f'translated row {i}' for i in range(51)])
 
     def test_failure_drains_and_checkpoints_already_sent_success(self):
         self.write([('bad', '', ''), ('good {0}', '', ''), ('later', '', '')])
@@ -240,7 +272,7 @@ class TranslationPerformanceTests(unittest.TestCase):
         self.assertEqual(result['batches'], 1)
 
     def test_context_index_does_not_retain_knowledge_after_job(self):
-        index = _ContextIndex({}, {'original': 'translation'}, '')
+        index = _ContextIndex({}, {'original': 'translation'})
         index.references('original')
         reference = weakref.ref(index)
         del index

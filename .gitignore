@@ -5,3 +5,4 @@ __pycache__/
 *.py[cod]
 instance/
 backup_original_*/
+/config/projects/**/.*.lock

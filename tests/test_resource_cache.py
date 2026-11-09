@@ -30,8 +30,8 @@ class ResourceCacheTests(unittest.TestCase):
         self.language = {'database_name': 'English'}
         self.created = 0
         self.requests = []
-        self.profile = 'tone'
-        self.after_profile = None
+        self.term = 'Hero'
+        self.after_load = None
 
         def create(*args, **kwargs):
             self.created += 1
@@ -46,9 +46,11 @@ class ResourceCacheTests(unittest.TestCase):
                 def page(start, end):
                     self.requests.append((name, start, end))
                     # Deliberately cap below page size to exercise pagination.
-                    data = ([{'source_term': '英雄', 'target_term': 'Hero', 'note': 'noun'}]
+                    data = ([{'source_term': '英雄', 'target_term': self.term, 'note': 'noun'}]
                             if name == 'glossaries' else
                             [{'source_text': '你好', 'target_text': 'Hello'}])
+                    if name == 'translation_memory' and start and self.after_load:
+                        self.after_load()
                     query.execute.return_value.data = data if start == 0 else []
                     return query
 
@@ -57,12 +59,6 @@ class ResourceCacheTests(unittest.TestCase):
 
             engine.client.table.side_effect = table
 
-            def profile(game):
-                if self.after_profile:
-                    self.after_profile()
-                return self.profile
-
-            engine.get_game_profile.side_effect = profile
             return engine
 
         self.database = patch('translation_app.services.database.ProjectDatabase', side_effect=create)
@@ -129,7 +125,7 @@ with patch('translation_app.services.database.ProjectDatabase', side_effect=Asse
     result = load_resources({'direct':False,'database_id':'S06'}, {'database_name':'English'}, {})
     assert result[0]['英雄']['target'] == 'Hero'
     assert result[1]['你好'] == 'Hello'
-    assert result[2] == 'tone'
+    assert result[2] == ''
 """
         subprocess.run([sys.executable, '-c', code], check=True, capture_output=True)
         path = resources._version_path('s06').parent.parent / 'resource-cache' / 'snapshots.sqlite3'
@@ -138,7 +134,7 @@ with patch('translation_app.services.database.ProjectDatabase', side_effect=Asse
 
     def test_simultaneous_preload_and_translation_load_only_once(self):
         from concurrent.futures import ThreadPoolExecutor
-        self.after_profile = lambda: time.sleep(.03)
+        self.after_load = lambda: time.sleep(.03)
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = [pool.submit(self.load) for _ in range(2)]
             results = [future.result(timeout=3) for future in futures]
@@ -173,9 +169,9 @@ with patch('translation_app.services.database.ProjectDatabase', side_effect=Asse
 
     def test_game_generation_invalidates_all_languages_and_has_no_credentials(self):
         self.load()
-        self.profile = 'new style'
+        self.term = 'Updated Hero'
         resources.invalidate_resources('s06')
-        self.assertEqual(self.load()[2], 'new style')
+        self.assertEqual(self.load()[0]['英雄']['target'], 'Updated Hero')
         self.assertEqual(self.created, 2)
         marker = resources._version_path('s06')
         self.assertTrue(marker.is_file())
@@ -198,7 +194,7 @@ with patch('translation_app.services.database.ProjectDatabase', side_effect=Asse
         self.assertEqual(self.created, 2)
 
     def test_invalidation_during_load_does_not_cache_mixed_snapshot(self):
-        self.after_profile = lambda: resources.invalidate_resources('s06')
+        self.after_load = lambda: resources.invalidate_resources('s06')
         self.load()
         self.load()
         self.assertEqual(self.created, 2)

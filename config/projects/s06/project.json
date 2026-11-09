@@ -7,6 +7,5 @@
   "languages": [
     "english"
   ],
-  "project_prompt": "prompts/project.md",
   "direct": false
 }

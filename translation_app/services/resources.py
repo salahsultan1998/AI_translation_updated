@@ -136,7 +136,7 @@ def load_resources(project, language, settings):
     game = project['database_id'].lower().strip()
     lang = language['database_name'].lower().strip()
     path = _version_path(game, settings)
-    scope = (str(path), lang, anonymous, _fingerprint(token or ''))
+    scope = (str(path), lang, anonymous, _fingerprint(token or ''), 'repo-prompt-pairs')
     disk_key = _fingerprint(json.dumps(scope))
     if not ttl:
         with _LOCK:
@@ -222,5 +222,5 @@ def _fetch_resources(game, lang, token, anonymous):
     snapshot = ({row['source_term']: {'target': row['target_term'], 'note': row.get('note') or ''}
                  for row in glossary},
                 {row['source_text']: row['target_text'] for row in memory},
-                engine.get_game_profile(game))
+                '')
     return snapshot

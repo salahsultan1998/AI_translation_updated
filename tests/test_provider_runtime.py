@@ -118,7 +118,7 @@ class ProviderRuntimeTests(unittest.TestCase):
         self.assertEqual(Path(self.folder.name, '0.lock').stat().st_mode & 0o777, 0o600)
 
     def test_configuration_and_default_root(self):
-        for value in ('0', '33', 'bad', ''):
+        for value in ('0', '129', 'bad', ''):
             with patch.dict(os.environ, {'TRANSLATION_GLOBAL_CONCURRENCY': value}):
                 with self.assertRaisesRegex(ValueError, 'TRANSLATION_GLOBAL_CONCURRENCY'):
                     with runtime.request_slot(self.settings):

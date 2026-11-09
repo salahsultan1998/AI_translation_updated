@@ -38,9 +38,10 @@ def _project_language(folder, language):
         raise ValueError(f"语言标识无效：{language}")
     if not all(isinstance(data.get(k), str) and data[k].strip() for k in ("name", "database_name")):
         raise ValueError(f"语言名称无效：{language}")
-    _safe_file(language_folder, data.get("instructions"))
-    if "project_instructions" in data:
-        _safe_file(language_folder, data["project_instructions"])
+    system = _safe_file(language_folder, data.get("system_prompt"))
+    instructions = _safe_file(language_folder, data.get("instructions"))
+    if system == instructions:
+        raise ValueError('系统提示词与翻译要求必须使用不同文件')
     return data
 
 
@@ -76,8 +77,6 @@ def list_projects():
                 or any(not isinstance(lang, str) or not _ID.fullmatch(lang) for lang in supported)
                 or len(set(supported)) != len(supported)):
             raise ValueError(f"项目语言配置无效：{folder.name}")
-        if not direct:
-            _safe_file(folder, data.get("project_prompt"))
         db_names = [_project_language(folder, lang)["database_name"].strip().casefold() for lang in supported]
         if len(set(db_names)) != len(db_names):
             raise ValueError(f"项目语言数据库名称重复：{folder.name}")
@@ -101,15 +100,10 @@ def validate_selection(project_id, language):
     return project, _project_language(folder, language)
 
 
-def compose_prompt(project_id, language):
-    project, language_info = validate_selection(project_id, language)
-    base = _safe_file(CONFIG_ROOT, "base_prompt.md").read_text(encoding="utf-8")
-    base = base.replace("{target_lang}", language_info["database_name"])
+def load_prompt_pair(project_id, language):
+    """Read the two standalone repo files verbatim; no inherited prompt layers."""
+    _, language_info = validate_selection(project_id, language)
     folder = CONFIG_ROOT / "projects" / project_id
     lang_folder = folder / "languages" / language
-    parts = [base, _safe_file(lang_folder, language_info["instructions"]).read_text(encoding="utf-8")]
-    if not project["direct"]:
-        parts.append(_safe_file(folder, project["project_prompt"]).read_text(encoding="utf-8"))
-    if "project_instructions" in language_info:
-        parts.append(_safe_file(lang_folder, language_info["project_instructions"]).read_text(encoding="utf-8"))
-    return "\n\n".join(part.strip() for part in parts if part.strip())
+    return {kind: _safe_file(lang_folder, language_info[key]).read_text(encoding='utf-8')
+            for kind, key in (('system', 'system_prompt'), ('instructions', 'instructions'))}

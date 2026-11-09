@@ -12,15 +12,11 @@ class PromptConflict(Exception):
 
 
 def _paths(project_id, language):
-    project, info = projects.validate_selection(project_id, language)
+    _, info = projects.validate_selection(project_id, language)
     folder = projects.CONFIG_ROOT / 'projects' / project_id
     lang_folder = folder / 'languages' / language
-    paths = {'language': projects._safe_file(lang_folder, info['instructions'])}
-    if not project['direct']:
-        paths['project'] = projects._safe_file(folder, project['project_prompt'])
-    if 'project_instructions' in info:
-        paths['additional'] = projects._safe_file(lang_folder, info['project_instructions'])
-    return paths
+    return {'system': projects._safe_file(lang_folder, info['system_prompt']),
+            'instructions': projects._safe_file(lang_folder, info['instructions'])}
 
 
 def _entry(path):
@@ -29,9 +25,8 @@ def _entry(path):
 
 
 def read_prompts(project_id, language):
-    entries = {name: _entry(path) for name, path in _paths(project_id, language).items()}
-    entries['base'] = _entry(projects._safe_file(projects.CONFIG_ROOT, 'base_prompt.md'))
-    return entries
+    return {name: {**_entry(path), 'path': str(path.relative_to(projects.CONFIG_ROOT.resolve().parent))}
+            for name, path in _paths(project_id, language).items()}
 
 
 def save_prompt(project_id, language, kind, content, version):

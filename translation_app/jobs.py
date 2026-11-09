@@ -134,7 +134,7 @@ class JobStore:
                 os.chmod(input_path, 0o600)
                 fh.write(file_bytes)
             retry_settings = {key: settings[key] for key in ('model', 'batch_size', 'use_smart_budget',
-                              'custom_instructions', 'system_prompt', 'use_exact_memory') if key in settings}
+                              'instructions', 'custom_instructions', 'system_prompt', 'use_exact_memory') if key in settings}
             with (folder / 'retry.json').open('x', encoding='utf-8') as fh:
                 os.chmod(fh.name, 0o600)
                 json.dump(retry_settings, fh, ensure_ascii=False)

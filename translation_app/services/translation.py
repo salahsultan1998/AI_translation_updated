@@ -14,15 +14,15 @@ import requests
 from . import provider_runtime
 from .resources import load_resources as _resources
 from .translation_state import Checkpoint, check_cancelled, fingerprint, output_lock
-from .projects import compose_prompt, validate_selection
+from .projects import load_prompt_pair, validate_selection
 from .spreadsheets import read_mapped_rows, write_translations
 
 _TAGS = re.compile(r"(\{[^{}]+\}|%[sdif]|<[^>]+>)")
 
 
 class _ContextIndex:
-    def __init__(self, terms, memory, profile):
-        self.terms, self.memory, self.profile = terms, memory, profile
+    def __init__(self, terms, memory):
+        self.terms, self.memory = terms, memory
         self.sources = list(memory)
         self.automaton = None
         self.rapid = None
@@ -74,8 +74,6 @@ class _ContextIndex:
 
     def build(self, rows):
         pieces, found_terms, found_memory = [], set(), set()
-        if self.profile:
-            pieces.append("### GAME TONE & STYLE INSTRUCTIONS:\n" + self.profile)
         for _, source, _ in rows:
             terms, memory = self.references(source)
             found_terms.update(terms)
@@ -125,7 +123,8 @@ def _call_model(rows, system_prompt, target_language, context, settings):
             with provider_runtime.request_slot(settings):
                 sent = time.perf_counter()
                 _timing(settings, 'request_start', attempt=attempt + 1, model=data['model'],
-                        rows=len(rows), slot_wait_seconds=f'{sent - waiting:.4f}')
+                        rows=len(rows), reasoning_enabled=data['reasoning']['enabled'],
+                        slot_wait_seconds=f'{sent - waiting:.4f}')
                 response = provider_runtime.post(endpoint, headers={"Authorization": f"Bearer {key}"},
                                                  json=data, timeout=(10, 90))
             status = response.status_code
@@ -187,15 +186,15 @@ def _call_model(rows, system_prompt, target_language, context, settings):
 def _request_data(rows, system_prompt, target_language, context, settings):
     model = settings.get("model") or os.getenv("OPENROUTER_MODEL", "qwen/qwen3.6-flash")
     payload_rows = [{"row_id": row_id, "source_text": source, "context": ctx} for row_id, source, ctx in rows]
-    instruction = settings.get("custom_instructions", "").strip()
+    instruction = settings.get("instructions", settings.get("custom_instructions", ""))
     user = (f"### TARGET LANGUAGE: {target_language}\n\n### REFERENCE CONTEXT:\n{context}\n\n"
-            f"### CUSTOM INSTRUCTIONS:\n{instruction}\n\n### SOURCE TEXT:\n"
+            f"### INSTRUCTIONS:\n{instruction}\n\n### SOURCE TEXT:\n"
             + json.dumps(payload_rows, ensure_ascii=False))
-    system = system_prompt + ('\n\nRespond only with JSON: {"translations": '
-                              '[{"row_id": 0, "translated_text": "..."}]}')
+    system = system_prompt
     return {"model": model, "messages": [{"role": "system", "content": system},
             {"role": "user", "content": user}], "temperature": 0.2,
             "response_format": {"type": "json_object"},
+            "reasoning": {"enabled": False},
             "max_tokens": settings.get('_output_budget', 4000)}
 
 
@@ -324,7 +323,7 @@ def _translate_file(input_path, output_path, project_id, language, mappings, set
     batch_size = settings.get('batch_size', 10)
     if type(batch_size) is not int or not 1 <= batch_size <= 50:
         raise ValueError('每批行数必须在 1 到 50 之间')
-    concurrency = provider_runtime.int_setting('TRANSLATION_CONCURRENCY', 1, 1, 16)
+    concurrency = provider_runtime.int_setting('TRANSLATION_CONCURRENCY', 50, 1, 128)
     input_budget = provider_runtime.int_setting('TRANSLATION_INPUT_TOKEN_BUDGET', 6000, 256, 64000)
     settings['_output_budget'] = provider_runtime.int_setting('TRANSLATION_OUTPUT_TOKEN_BUDGET', 4000, 256, 32000)
     stage('reading')
@@ -345,13 +344,15 @@ def _translate_file(input_path, output_path, project_id, language, mappings, set
         raise ValueError('没有可翻译的源文本')
     performance['rows'] = len(positions)
     timings['read_seconds'] = time.perf_counter() - mark
-    prompt = settings.get('system_prompt') if 'system_prompt' in settings else compose_prompt(project_id, language)
+    pair = load_prompt_pair(project_id, language)
+    prompt = settings.get('system_prompt', pair['system'])
+    settings.setdefault('instructions', settings.get('custom_instructions', pair['instructions']))
     # Provisional progress is visible even while resources are being loaded.
     if progress:
         progress(0, len(unique))
     stage('resources')
     mark = time.perf_counter()
-    terms, memory, profile = (loader or _resources)(project, lang, settings)
+    terms, memory, _ = (loader or _resources)(project, lang, settings)
     timings['resources_seconds'] = time.perf_counter() - mark
     stage('planning')
     mark = time.perf_counter()
@@ -361,9 +362,10 @@ def _translate_file(input_path, output_path, project_id, language, mappings, set
                            'prompt': prompt, 'model': settings.get('model') or os.getenv('OPENROUTER_MODEL', 'qwen/qwen3.6-flash'),
                            'endpoint': os.getenv('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'),
                            'fallback': os.getenv('OPENROUTER_FALLBACK_MODEL', ''),
-                           'instructions': settings.get('custom_instructions', ''),
+                           'reasoning': {'enabled': False},
+                           'instructions': settings['instructions'],
                            'exact_memory': bool(settings.get('use_exact_memory')),
-                           'terms': terms, 'memory': memory, 'profile': profile})
+                           'terms': terms, 'memory': memory})
     checkpoint = Checkpoint(output_path, version)
     try:
         translated = checkpoint.read()
@@ -385,7 +387,7 @@ def _translate_file(input_path, output_path, project_id, language, mappings, set
             checkpoint.save(exact)
             translated.update(exact)
         pending_rows = [row for row in unique if row[0] not in translated]
-        index = _ContextIndex(terms, memory, profile)
+        index = _ContextIndex(terms, memory)
 
         def plans():
             for batch in _iter_batches(pending_rows, batch_size, bool(settings.get('use_smart_budget', True))):

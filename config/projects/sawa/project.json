@@ -8,6 +8,5 @@
     "arabic",
     "turkish"
   ],
-  "project_prompt": "prompts/project.md",
   "direct": false
 }

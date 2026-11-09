@@ -7,6 +7,15 @@ from translation_app.services.translation import _call_model
 
 
 class ProviderRequestTests(unittest.TestCase):
+    def test_translation_request_disables_reasoning_and_preserves_json_format(self):
+        with patch.dict('os.environ', {'OPENROUTER_API_KEY': 'test-key'}), \
+             patch('translation_app.services.translation.provider_runtime.post', return_value=self.response(200)) as post:
+            result = self.call()
+        data = post.call_args.kwargs['json']
+        self.assertEqual(data['reasoning'], {'enabled': False})
+        self.assertEqual(data['response_format'], {'type': 'json_object'})
+        self.assertEqual(result, [{'row_id': 0, 'translated_text': 'test'}])
+
     def test_prompt_logs_show_input_lengths_and_optional_full_content_without_api_key(self):
         for enabled in ('true', 'false'):
             with patch.dict('os.environ', {'OPENROUTER_API_KEY': 'secret-test-key',
@@ -44,9 +53,11 @@ class ProviderRequestTests(unittest.TestCase):
 
     def test_transient_statuses_retry_and_use_fallback(self):
         seen_models = []
+        seen_reasoning = []
         responses = iter([self.response(429), self.response(503), self.response(200)])
         def post(*args, **kwargs):
             seen_models.append(kwargs['json']['model'])
+            seen_reasoning.append(dict(kwargs['json']['reasoning']))
             return next(responses)
         with patch.dict('os.environ', {'OPENROUTER_API_KEY': 'test-key', 'OPENROUTER_FALLBACK_MODEL': 'fallback'}), \
              patch('translation_app.services.translation.provider_runtime.post', side_effect=post), \
@@ -54,6 +65,7 @@ class ProviderRequestTests(unittest.TestCase):
             result = self.call()
         self.assertEqual(result[0]['translated_text'], 'test')
         self.assertEqual(seen_models, ['primary', 'primary', 'fallback'])
+        self.assertEqual(seen_reasoning, [{'enabled': False}] * 3)
         self.assertEqual(sleep.call_count, 2)
 
     def test_read_timeout_does_not_replay_a_potentially_billable_request(self):

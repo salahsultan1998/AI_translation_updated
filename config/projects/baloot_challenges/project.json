@@ -7,6 +7,5 @@
   "languages": [
     "arabic"
   ],
-  "project_prompt": "prompts/project.md",
   "direct": false
 }

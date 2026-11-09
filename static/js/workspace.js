@@ -175,12 +175,11 @@
     try {
       const result = await request(`/api/projects/${encodeURIComponent(projectId)}/prompts?language=${encodeURIComponent(language)}`);
       if (requestId !== promptState.loading) return;
-      $('prompt-base-content').textContent = result.prompts.base.content;
-      const labels = {project:['项目提示词','适用于此项目的所有语言'], language:['语言提示词','仅适用于此项目的当前语言'], additional:['语言补充规则','在项目规则之后应用']};
-      for (const kind of ['project', 'language', 'additional']) {
+      const labels = {system:['System prompt（系统提示词）','定义翻译角色和核心规则'], instructions:['Instructions（翻译要求）','定义当前游戏和语言的风格、语气与术语规则']};
+      for (const kind of ['system', 'instructions']) {
         const data = result.prompts[kind]; if (!data) continue;
         const section = node('div', null, 'prompt-editor');
-        const heading = node('h3', labels[kind][0]); const description = node('p', labels[kind][1], 'muted small');
+        const heading = node('h3', labels[kind][0]); const description = node('p', `${labels[kind][1]} · 保存到 ${data.path}`, 'muted small');
         const textarea = node('textarea'); textarea.value = data.content; textarea.setAttribute('aria-label', labels[kind][0]); textarea.dir = 'auto';
         const actions = node('div', null, 'prompt-actions'); const status = node('span', '', 'muted small');
         const discard = node('button', '放弃修改', 'secondary compact'); discard.type = 'button'; discard.disabled = true;
@@ -208,7 +207,6 @@
     $('translate-panel').hidden = button.dataset.tab !== 'translate';
     if ($('knowledge-panel')) $('knowledge-panel').hidden = button.dataset.tab !== 'knowledge';
     $('config-panel').hidden = button.dataset.tab !== 'config';
-    if (button.dataset.tab === 'knowledge') loadProfile();
     if (button.dataset.tab === 'config') loadPrompts();
   }));
   let promptLanguage = $('language').value;
@@ -249,7 +247,7 @@
   }
   $('preview-file').addEventListener('click', async () => { clearMessages(); try { state.upload = await previewUpload($('file')); showSheets(state.upload); } catch (e) { showError(e.message); } });
   function jobPayload() {
-    const payload = { project_id: projectId, language: $('language').value, model: $('model').value, batch_size: Number($('batch-size').value), use_smart_budget: $('batch-mode').value === 'auto', custom_instructions: $('instructions').value, use_exact_memory: $('exact-memory').checked };
+    const payload = { project_id: projectId, language: $('language').value, model: $('model').value, batch_size: Number($('batch-size').value), use_smart_budget: $('batch-mode').value === 'auto', use_exact_memory: $('exact-memory').checked };
     if (state.input === 'manual') {
       state.submitted = manualRows().map(row => ({ id: row.dataset.rowId, source_text: row.querySelector('.manual-source').value, context: row.querySelector('.manual-context').value, target: row.querySelector('.manual-translation').value }));
       payload.manual_rows = state.submitted.map(({source_text, context, target}) => ({source_text, context, translated_text: target}));
@@ -383,8 +381,6 @@
     knowledgeStatus.textContent = '正在加载项目知识库…';
     preloadResources($('language').value).catch(() => {});
   });
-  async function loadProfile() { try { const result = await request(`/api/projects/${encodeURIComponent(projectId)}/profile`); $('profile').value = result.profile || ''; } catch (e) { showError(e.message); } }
-  $('save-profile').addEventListener('click', async () => { clearMessages(); try { await request(`/api/projects/${encodeURIComponent(projectId)}/profile`, {method:'POST',body:{profile:$('profile').value}}); showNotice('项目说明已保存。'); refreshKnowledge(); } catch (e) { showError(e.message); } });
   $('add-term').addEventListener('click', addTermRow); addTermRow();
   function collectTerms() { return [...document.querySelectorAll('.term-row')].map(row => ({ source:row.querySelector('.term-source').value.trim(), target:row.querySelector('.term-target').value.trim(), note:row.querySelector('.term-note').value.trim() })).filter(pair => pair.source && pair.target); }
   async function saveTerms(pairs) { if (!pairs.length) { $('conflicts').hidden = true; showNotice('已保留所有现有术语，无需保存。'); return; } const result = await request(`/api/projects/${encodeURIComponent(projectId)}/glossary/save`, {method:'POST',body:{language:$('language').value,pairs}}); $('conflicts').hidden = true; showNotice(`已保存 ${result.count} 条术语。`); refreshKnowledge(); }

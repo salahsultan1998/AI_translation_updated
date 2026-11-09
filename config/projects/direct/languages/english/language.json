@@ -2,5 +2,6 @@
   "id": "english",
   "name": "英语",
   "database_name": "English",
-  "instructions": "instructions.md"
+  "instructions": "instructions.md",
+  "system_prompt": "system.md"
 }

@@ -25,25 +25,14 @@ class FlaskWorkflowTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_profile_read_save_and_csrf(self):
+    def test_database_style_is_not_an_extra_prompt_editor(self):
         database = MagicMock()
-        database.get_game_profile.return_value = '游戏说明'
         with patch('translation_app.web.api.engine', return_value=database):
-            result = self.client.get('/api/projects/tarbi3a_baloot/profile')
-            self.assertEqual(result.status_code, 200)
-            self.assertEqual(result.get_json(), {'profile': '游戏说明'})
-            database.get_game_profile.assert_called_once_with('Tarbi3a_Baloot')
-
-            denied = self.client.post('/api/projects/tarbi3a_baloot/profile', json={'profile': '新说明'})
-            self.assertEqual(denied.status_code, 403)
-            database.upsert_game_profile.assert_not_called()
-            saved = self.client.post('/api/projects/tarbi3a_baloot/profile', json={'profile': '新说明'}, headers=self.headers)
-            self.assertEqual(saved.status_code, 200)
-            database.upsert_game_profile.assert_called_once_with('Tarbi3a_Baloot', '新说明')
-
-            invalid = self.client.post('/api/projects/tarbi3a_baloot/profile', json={'profile': []}, headers=self.headers)
-            self.assertEqual(invalid.status_code, 400)
-            self.assertEqual(database.upsert_game_profile.call_count, 1)
+            self.assertEqual(self.client.get('/api/projects/tarbi3a_baloot/profile').status_code, 404)
+            page = self.client.get('/projects/tarbi3a_baloot').text
+            self.assertNotIn('id="profile"', page)
+            self.assertNotIn('共享基础规则', page)
+        database.get_game_profile.assert_not_called()
 
     def test_glossary_check_conflicts_then_save_chosen_values(self):
         database, query = MagicMock(), MagicMock()
