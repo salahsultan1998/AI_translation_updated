@@ -105,7 +105,7 @@ class PromptEditorTests(unittest.TestCase):
             settings = json.loads(db.execute('SELECT settings FROM jobs WHERE id=?', (job_id,)).fetchone()[0])
         self.assertEqual(settings['system_prompt'], before['system'])
         self.assertEqual(settings['instructions'], before['instructions'])
-        self.assertNotIn('custom_instructions', settings)
+        self.assertEqual(settings['custom_instructions'], '')
         entries = self.read('s06', 'english')
         for kind in ('system', 'instructions'):
             self.save('s06', 'english', kind, 'Changed after submission', entries[kind]['version'])
@@ -125,12 +125,50 @@ class PromptEditorTests(unittest.TestCase):
         self.assertEqual(store.get(claimed['owner_id'], job_id)['status'], 'completed')
         self.assertEqual(received, [(before['system'], before['instructions'], '')])
 
-    def test_temporary_third_prompt_is_rejected(self):
-        result = self.client.post('/api/jobs', headers=self.headers, json={'project_id': 'direct',
-            'language': 'english', 'custom_instructions': 'Unsaved third prompt',
+    def test_temporary_instructions_apply_only_to_task_and_do_not_change_repo_files(self):
+        project, language = 'direct', 'english'
+        before = projects.load_prompt_pair(project, language)
+        created = self.client.post('/api/jobs', headers=self.headers, json={
+            'project_id': project, 'language': language, 'custom_instructions': 'Make this very short',
             'manual_rows': [{'source_text': 'hello'}]})
-        self.assertEqual(result.status_code, 400)
-        self.assertIn('Instructions', result.json['error'])
+        self.assertEqual(created.status_code, 202)
+        job_id, store = created.json['id'], self.app.extensions['jobs']
+        store.claim('failed-worker')
+        store.fail(job_id, 'failed-worker')
+        self.assertEqual(self.client.post(f'/api/jobs/{job_id}/retry', headers=self.headers).status_code, 202)
+        sent = []
+
+        def provider(rows, system, target_language, context, settings):
+            sent.append(_request_data(rows, system, target_language, context, settings))
+            return [{'row_id': row[0], 'translated_text': 'Hello'} for row in rows]
+
+        process_one(store, lambda *args: translate_file(*args, provider=provider))
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(len(sent[0]['messages']), 2)
+        self.assertEqual(sent[0]['messages'][0]['content'], before['system'])
+        self.assertIn(before['instructions'], sent[0]['messages'][1]['content'])
+        self.assertIn('### TEMPORARY INSTRUCTIONS:\nMake this very short', sent[0]['messages'][1]['content'])
+        self.assertEqual(projects.load_prompt_pair(project, language), before)
+        next_job = self.client.post('/api/jobs', headers=self.headers, json={
+            'project_id': project, 'language': language, 'manual_rows': [{'source_text': 'hello'}]})
+        self.assertEqual(next_job.status_code, 202)
+        claimed = store.claim('next-worker')
+        self.assertEqual(claimed['settings']['custom_instructions'], '')
+        self.assertEqual(claimed['settings']['instructions'], before['instructions'])
+
+    def test_temporary_instruction_validation(self):
+        for value in (None, [], 123, 'x' * 20001):
+            with self.subTest(value_type=type(value).__name__):
+                result = self.client.post('/api/jobs', headers=self.headers, json={
+                    'project_id': 'direct', 'language': 'english', 'custom_instructions': value,
+                    'manual_rows': [{'source_text': 'hello'}]})
+                self.assertEqual(result.status_code, 400)
+
+    def test_blank_temporary_instructions_add_no_prompt_section(self):
+        data = _request_data([(0, 'hello', '')], 'Saved system', 'English', '',
+                             {'instructions': 'Saved instructions', 'custom_instructions': '   '})
+        self.assertNotIn('TEMPORARY INSTRUCTIONS', data['messages'][1]['content'])
+        self.assertIn('Saved instructions', data['messages'][1]['content'])
 
     def test_prompt_paths_cannot_escape_or_alias_each_other(self):
         path = self.config / 'projects/sawa/languages/arabic/language.json'
@@ -152,7 +190,8 @@ class PromptEditorTests(unittest.TestCase):
         self.assertEqual(projects.load_prompt_pair('sawa', 'arabic'), before)
         page = self.client.get('/projects/sawa').text
         self.assertNotIn('共享基础规则', page)
-        self.assertNotIn('id="instructions"', page)
+        self.assertIn('id="instructions"', page)
+        self.assertIn('仅本次，不保存', page)
         self.assertIn('全团队共用', page)
 
 

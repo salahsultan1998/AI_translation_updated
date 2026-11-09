@@ -15,6 +15,8 @@ import threading
 import time
 import uuid
 
+from .translation_state import check_cancelled
+
 _CACHE = OrderedDict()
 _LOCK = threading.Lock()
 _MAX_ENTRIES = 2
@@ -103,12 +105,18 @@ def _disk_cache(path):
 
 
 @contextmanager
-def _population_lock(path, key):
+def _population_lock(path, key, settings):
     root = path.parent.parent / 'resource-cache'
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd = os.open(root / (key + '.lock'), os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        while True:
+            check_cancelled(settings)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                time.sleep(.05)
         yield
     finally:
         os.close(fd)
@@ -123,6 +131,7 @@ def _remember(key, expires, snapshot):
 
 
 def load_resources(project, language, settings):
+    check_cancelled(settings)
     settings['_resource_expires_at'] = 0
     if project['direct']:
         return {}, {}, ''
@@ -141,11 +150,11 @@ def load_resources(project, language, settings):
     if not ttl:
         with _LOCK:
             _CACHE.clear()
-        return _fetch_resources(game, lang, token, anonymous)
+        return _fetch_resources(game, lang, token, anonymous, settings)
 
     # A per-scope lock coalesces page preload and worker requests, also across
     # processes. Other projects/languages/auth scopes can load independently.
-    with _population_lock(path, disk_key):
+    with _population_lock(path, disk_key, settings):
         version = _version(path)
         key = scope + (version,)
         now = time.time()
@@ -173,7 +182,7 @@ def load_resources(project, language, settings):
                 logging.getLogger(__name__).info('Knowledge cache hit: shared disk')
                 return deepcopy(snapshot)
         logging.getLogger(__name__).info('Knowledge cache miss: loading Supabase')
-        snapshot = _fetch_resources(game, lang, token, anonymous)
+        snapshot = _fetch_resources(game, lang, token, anonymous, settings)
         # Edits during a load must never publish a mixed snapshot for later jobs.
         if _version(path) == version:
             expires = now + ttl
@@ -199,7 +208,7 @@ def preload_resources(project, language, settings):
     return result
 
 
-def _fetch_resources(game, lang, token, anonymous):
+def _fetch_resources(game, lang, token, anonymous, settings):
     from .database import ProjectDatabase
     # Each miss uses a fresh client; mutable authentication is never shared.
     engine = ProjectDatabase(token, allow_anonymous=anonymous)
@@ -207,6 +216,7 @@ def _fetch_resources(game, lang, token, anonymous):
     def fetch_all(table, columns, order):
         rows, offset, page_size = [], 0, 1000
         while True:
+            check_cancelled(settings)
             response = (engine.client.table(table).select(columns).eq('game_id', game)
                         .eq('target_language', lang).order(order)
                         .range(offset, offset + page_size - 1).execute())

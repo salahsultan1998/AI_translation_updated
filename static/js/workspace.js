@@ -5,7 +5,7 @@
   const projectId = workspace.dataset.project;
   const isDirect = workspace.dataset.direct === 'true';
   const csrf = document.querySelector('meta[name="csrf-token"]').content;
-  const state = { input: 'file', upload: null, knowledge: null, cleanPairs: [], conflicts: [], timer: null, manualChanged: false, languageChanged: false, submitted: null };
+  const state = { input: 'manual', upload: null, knowledge: null, cleanPairs: [], conflicts: [], timer: null, manualChanged: false, languageChanged: false, submitted: null };
   const node = (tag, text, className) => { const el = document.createElement(tag); if (text != null) el.textContent = text; if (className) el.className = className; return el; };
   const workerHint = node('p', '', 'muted small');
   workerHint.setAttribute('role', 'status');
@@ -247,7 +247,7 @@
   }
   $('preview-file').addEventListener('click', async () => { clearMessages(); try { state.upload = await previewUpload($('file')); showSheets(state.upload); } catch (e) { showError(e.message); } });
   function jobPayload() {
-    const payload = { project_id: projectId, language: $('language').value, model: $('model').value, batch_size: Number($('batch-size').value), use_smart_budget: $('batch-mode').value === 'auto', use_exact_memory: $('exact-memory').checked };
+    const payload = { project_id: projectId, language: $('language').value, model: $('model').value, batch_size: Number($('batch-size').value), use_smart_budget: $('batch-mode').value === 'auto', custom_instructions: $('instructions').value, use_exact_memory: $('exact-memory').checked };
     if (state.input === 'manual') {
       state.submitted = manualRows().map(row => ({ id: row.dataset.rowId, source_text: row.querySelector('.manual-source').value, context: row.querySelector('.manual-context').value, target: row.querySelector('.manual-translation').value }));
       payload.manual_rows = state.submitted.map(({source_text, context, target}) => ({source_text, context, translated_text: target}));
@@ -264,10 +264,14 @@
   }
   function presentJob(job) {
     $('job-status').hidden = false;
-    $('start-job').disabled = ['queued', 'running'].includes(job.status);
-    const statuses = {queued:'排队中',running:'正在翻译',complete:'翻译完成',completed:'翻译完成',partial:'翻译部分完成',failed:'翻译失败',interrupted:'任务中断',cancelled:'任务已取消'};
+    $('start-job').disabled = ['queued', 'running', 'cancelling'].includes(job.status);
+    state.stopJob = job.can_cancel ? job.id : null;
+    $('stop-job').hidden = !['queued', 'running', 'cancelling'].includes(job.status);
+    $('stop-job').disabled = Boolean(state.stopPending) || !state.stopJob;
+    $('stop-job').textContent = job.status === 'cancelling' ? '正在停止…' : '停止翻译';
+    const statuses = {queued:'排队中',running:'正在翻译',complete:'翻译完成',completed:'翻译完成',partial:'翻译部分完成',failed:'翻译失败',interrupted:'任务中断',cancelling:'正在停止翻译…',cancelled:'翻译已停止'};
     $('job-message').textContent = job.message || statuses[job.status] || job.status;
-    const waitingForWorker = job.worker_online === false && ['queued', 'running'].includes(job.status);
+    const waitingForWorker = job.worker_online === false && ['queued', 'running', 'cancelling'].includes(job.status);
     workerHint.hidden = !waitingForWorker;
     if (waitingForWorker) workerHint.textContent = job.status === 'queued'
       ? '后台处理服务未运行，任务正在等待。请启动后台处理服务。'
@@ -283,9 +287,10 @@
     if (job.download_url) download.href = job.download_url;
     if (job.error) showError(job.error);
   }
-  async function loadResult(id, job) {
+  async function loadResult(id, job, generation = state.pollGeneration) {
     if (job.input_mode === 'manual') {
       const result = await request(`/api/jobs/${encodeURIComponent(id)}/manual-result`);
+      if (state.activeJobId !== id || generation !== state.pollGeneration) return;
       const rows = result.rows || [];
       let skipped = 0;
       const mismatch = job.language !== $('language').value;
@@ -323,6 +328,7 @@
       else { $('result-panel').hidden = true; if (state.input !== 'manual') showNotice('译文已填入手动输入表格。'); return; }
     }
     const result = await request(`/api/jobs/${encodeURIComponent(id)}/preview`);
+    if (state.activeJobId !== id || generation !== state.pollGeneration) return;
     const container = $('result-sheets'); container.replaceChildren();
     $('result-note').textContent = '每个工作表显示前十行；完整结果请下载文件。';
     for (const sheet of result.sheets || []) {
@@ -333,19 +339,30 @@
     }
     $('result-panel').hidden = !container.childElementCount;
   }
-  async function poll(id) {
-    try { const job = await request(`/api/jobs/${encodeURIComponent(id)}`); presentJob(job); if (['queued','running'].includes(job.status)) state.timer = setTimeout(() => poll(id), 2000); else { $('start-job').disabled = false; if (job.status === 'completed') await loadResult(id, job); } }
-    catch (e) { $('start-job').disabled = false; showError(e.message); }
+  async function poll(id, generation = state.pollGeneration) {
+    try { const job = await request(`/api/jobs/${encodeURIComponent(id)}`); if (state.activeJobId !== id || generation !== state.pollGeneration) return; presentJob(job); if (['queued','running','cancelling'].includes(job.status)) state.timer = setTimeout(() => poll(id, generation), 2000); else { $('start-job').disabled = false; if (job.status === 'completed') await loadResult(id, job, generation); } }
+    catch (e) { if (state.activeJobId !== id || generation !== state.pollGeneration) return; $('start-job').disabled = false; showError(e.message); }
   }
   $('start-job').addEventListener('click', async () => {
-    clearMessages(); try { const payload = jobPayload(); $('start-job').disabled = true; if (!isDirect) await preloadResources(payload.language); const job = await request('/api/jobs', {method:'POST',body:payload}); state.submittedJob = payload.manual_rows ? job.id : null; $('result-panel').hidden = true; presentJob(job); if (state.timer) clearTimeout(state.timer); poll(job.id); } catch (e) { $('start-job').disabled = false; showError(e.message); }
+    clearMessages(); try { const payload = jobPayload(); $('start-job').disabled = true; state.activeJobId = null; state.pollGeneration = (state.pollGeneration || 0) + 1; if (!isDirect) await preloadResources(payload.language); const job = await request('/api/jobs', {method:'POST',body:payload}); state.activeJobId = job.id; state.submittedJob = payload.manual_rows ? job.id : null; $('result-panel').hidden = true; presentJob(job); if (state.timer) clearTimeout(state.timer); poll(job.id); } catch (e) { $('start-job').disabled = false; showError(e.message); }
+  });
+  $('stop-job').addEventListener('click', async () => {
+    if (!state.stopJob || state.stopPending) return;
+    const id = state.stopJob, generation = state.pollGeneration;
+    state.stopPending = true; $('stop-job').disabled = true;
+    try {
+      const job = await request(`/api/jobs/${encodeURIComponent(id)}/cancel`, {method: 'POST'});
+      if (generation === state.pollGeneration) presentJob(job);
+    } catch (e) { showError(e.message); }
+    finally { state.stopPending = false; $('stop-job').disabled = !state.stopJob; }
   });
   $('retry-job').addEventListener('click', async () => {
     if (!state.retryJob) return;
     clearMessages(); $('retry-job').disabled = true; $('start-job').disabled = true;
+    state.activeJobId = null; state.pollGeneration = (state.pollGeneration || 0) + 1;
     try {
       const job = await request(`/api/jobs/${encodeURIComponent(state.retryJob)}/retry`, {method: 'POST'});
-      presentJob(job); if (state.timer) clearTimeout(state.timer); poll(job.id);
+      state.activeJobId = job.id; presentJob(job); if (state.timer) clearTimeout(state.timer); poll(job.id);
     } catch (e) { $('start-job').disabled = false; showError(e.message); }
     finally { $('retry-job').disabled = false; }
   });

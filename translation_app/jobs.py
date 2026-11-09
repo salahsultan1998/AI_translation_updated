@@ -79,7 +79,7 @@ class JobStore:
         status, message = row["status"], row["message"]
         # Surface a dead worker's expired lease even if no replacement worker
         # has arrived to perform the durable interruption update in claim().
-        if status == 'running' and row['lease_until'] is not None and row['lease_until'] < time.time():
+        if status in {'running', 'cancelling'} and row['lease_until'] is not None and row['lease_until'] < time.time():
             status, message = 'interrupted', '处理已中断，可继续未完成的翻译。'
         mapping = json.loads(row['mappings']).get('CSV_Sheet', {})
         input_mode = 'manual' if isinstance(mapping, dict) and mapping.get('_manual_entry') is True else 'file'
@@ -91,7 +91,8 @@ class JobStore:
                 "worker_online": worker_available,
                 "summary": json.loads(row["summary"]) if row["summary"] else None,
                 "started_at": row['started_at'], "queue_seconds": row['queue_seconds'],
-                "can_retry": status in {'failed', 'interrupted'},
+                "can_retry": status in {'failed', 'interrupted', 'cancelled'},
+                "can_cancel": status in {'queued', 'running'},
                 "created_at": row["created_at"], "updated_at": row["updated_at"]}
 
     def touch_worker(self, worker_id: str) -> None:
@@ -159,11 +160,11 @@ class JobStore:
             row = db.execute('SELECT * FROM jobs WHERE id=? AND owner_id=?', (job_id, owner_id)).fetchone()
             if not row:
                 return None
-            expired = row['status'] == 'running' and row['lease_until'] is not None and row['lease_until'] < now
-            if row['status'] not in {'failed', 'interrupted'} and not expired:
-                raise ValueError('只有失败或中断的任务可以继续')
+            expired = row['status'] in {'running', 'cancelling'} and row['lease_until'] is not None and row['lease_until'] < now
+            if row['status'] not in {'failed', 'interrupted', 'cancelled'} and not expired:
+                raise ValueError('只有失败、中断或已停止的任务可以继续')
             active = db.execute("SELECT count(*) FROM jobs WHERE owner_id=? AND id<>? "
-                                "AND (status='queued' OR (status='running' AND lease_until>=?))",
+                                "AND (status='queued' OR (status IN ('running','cancelling') AND lease_until>=?))",
                                 (owner_id, job_id, now)).fetchone()[0]
             if active >= 3:
                 raise ValueError('同时最多提交三个任务，请等待已有任务完成')
@@ -179,6 +180,40 @@ class JobStore:
                        'summary=NULL, queued_at=?, started_at=NULL, queue_seconds=NULL, updated_at=? WHERE id=?',
                        (json.dumps(settings, ensure_ascii=False), '等待继续处理', now, now, job_id))
         return self.get(owner_id, job_id)
+
+    def cancel(self, owner_id: str, job_id: str) -> dict | None:
+        """Cancel queued work immediately; let a running worker drain sent calls."""
+        self._directory(job_id)
+        now = time.time()
+        with self._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT status, lease_until FROM jobs WHERE id=? AND owner_id=?',
+                             (job_id, owner_id)).fetchone()
+            if row is None:
+                return None
+            if row['status'] == 'running' and row['lease_until'] is not None and row['lease_until'] >= now:
+                db.execute("UPDATE jobs SET status='cancelling', message=?, updated_at=? WHERE id=?",
+                           ('正在停止，等待已发送的请求结束…', now, job_id))
+            elif row['status'] in {'queued', 'running'}:
+                db.execute("UPDATE jobs SET status='cancelled', message=?, settings='{}', "
+                           'worker_id=NULL, lease_until=NULL, updated_at=? WHERE id=?',
+                           ('翻译已停止，可继续未完成的翻译。', now, job_id))
+        return self.get(owner_id, job_id)
+
+    def should_stop(self, job_id: str, worker_id: str) -> bool:
+        with self._connect() as db:
+            row = db.execute('SELECT status, worker_id, lease_until FROM jobs WHERE id=?', (job_id,)).fetchone()
+        return (row is None or row['status'] != 'running' or row['worker_id'] != worker_id
+                or row['lease_until'] is None or row['lease_until'] < time.time())
+
+    def finish_cancel(self, job_id: str, worker_id: str) -> bool:
+        now = time.time()
+        with self._connect() as db:
+            result = db.execute("UPDATE jobs SET status='cancelled', message=?, settings='{}', "
+                                'worker_id=NULL, lease_until=NULL, updated_at=? '
+                                "WHERE id=? AND worker_id=? AND status='cancelling' AND lease_until>=?",
+                                ('翻译已停止，可继续未完成的翻译。', now, job_id, worker_id, now))
+            return result.rowcount == 1
 
     def get(self, owner_id: str, job_id: str) -> dict | None:
         self._directory(job_id)
@@ -239,7 +274,7 @@ class JobStore:
             # Do not retry automatically: a model request may already have been charged.
             db.execute("""UPDATE jobs SET status='interrupted', message=?, worker_id=NULL,
                        lease_until=NULL, settings='{}', updated_at=?
-                       WHERE status='running' AND lease_until < ?""",
+                       WHERE status IN ('running','cancelling') AND lease_until < ?""",
                        ("处理已中断，可继续未完成的翻译。", now, now))
             row = db.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at, id LIMIT 1").fetchone()
             if row is None:
@@ -260,7 +295,7 @@ class JobStore:
         now = time.time()
         with self._connect() as db:
             result = db.execute("""UPDATE jobs SET lease_until=?, updated_at=?
-                WHERE id=? AND worker_id=? AND status='running' AND lease_until >= ?""",
+                WHERE id=? AND worker_id=? AND status IN ('running','cancelling') AND lease_until >= ?""",
                 (now + lease_seconds, now, job_id, worker_id, now))
             return result.rowcount == 1
 
@@ -315,12 +350,20 @@ def process_one(store: JobStore, translator: Callable | None = None, *,
     stopped = threading.Event()
     cancelled = threading.Event()
 
+    def check_stop():
+        if store.should_stop(job['id'], worker_id):
+            cancelled.set()
+
     def keep_alive():
-        while not stopped.wait(max(0.1, lease_seconds / 3)):
+        next_heartbeat = time.monotonic() + lease_seconds / 3
+        while not stopped.wait(min(.5, lease_seconds / 3)):
             try:
-                if not store.heartbeat(job["id"], worker_id, lease_seconds):
-                    cancelled.set()
-                    return
+                check_stop()
+                if time.monotonic() >= next_heartbeat:
+                    if not store.heartbeat(job["id"], worker_id, lease_seconds):
+                        cancelled.set()
+                        return
+                    next_heartbeat = time.monotonic() + lease_seconds / 3
             except Exception:
                 LOG.exception("Job heartbeat failed: %s", job["id"])
 
@@ -338,16 +381,23 @@ def process_one(store: JobStore, translator: Callable | None = None, *,
                 raise RuntimeError('Job lease lost')
 
         job['settings'].update(_stage_callback=stage, _cancel_event=cancelled,
+                               _cancel_check=check_stop,
                                _limiter_root=str(store.root / 'provider-slots'), _job_id=job['id'])
 
         summary = translator(job["input_path"], job["output_path"], job["project_id"],
                              job["language"], job["mappings"], job["settings"],
                              progress)
+        if store.finish_cancel(job['id'], worker_id):
+            return True
         if not job["output_path"].is_file():
             raise RuntimeError("Translation did not produce an output file")
         if not store.complete(job["id"], worker_id, summary or {}):
-            LOG.warning("Job finished after its lease expired: %s", job["id"])
+            if not store.finish_cancel(job['id'], worker_id):
+                LOG.warning("Job finished after its lease expired: %s", job["id"])
     except Exception as error:
+        if store.finish_cancel(job['id'], worker_id):
+            LOG.info('Translation job stopped: %s', job['id'])
+            return True
         # Provider errors can contain user text or credentials; never put them in logs.
         LOG.warning("Translation job failed: %s", job["id"])
         message = "翻译失败，请检查输入或稍后重试。"
@@ -364,7 +414,9 @@ def process_one(store: JobStore, translator: Callable | None = None, *,
               or re.fullmatch(r"翻译服务拒绝请求（HTTP [45]\d\d），请检查模型和服务配置", detail)
               or re.fullmatch(r"翻译服务暂不可用（HTTP [45]\d\d），请稍后重试", detail)):
             message = detail
-        store.fail(job["id"], worker_id, message)
+        if not store.fail(job["id"], worker_id, message):
+            # A stop request may race the failure update after the check above.
+            store.finish_cancel(job['id'], worker_id)
     finally:
         stopped.set()
         heartbeat.join()

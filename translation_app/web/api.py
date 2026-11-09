@@ -147,8 +147,9 @@ def create_job():
     size = data.get('batch_size', 10)
     if type(size) is not int or not 1 <= size <= 50:
         raise ValueError('每批行数必须在 1 到 50 之间')
-    if data.get('custom_instructions'):
-        raise ValueError('请先在提示词配置中保存 Instructions，再提交翻译')
+    custom_instructions = data.get('custom_instructions', '')
+    if not isinstance(custom_instructions, str) or len(custom_instructions) > 20000:
+        raise ValueError('补充翻译要求必须为文本，且不可超过 20000 字符')
     if 'manual_rows' in data:
         manual = data['manual_rows']
         if not isinstance(manual, list) or not 1 <= len(manual) <= 10000:
@@ -188,14 +189,15 @@ def create_job():
     if len(raw) > current_app.config['MAX_CONTENT_LENGTH']:
         raise ValueError('输入内容过大')
     settings = {'model': model, 'batch_size': size, 'use_smart_budget': bool(data.get('use_smart_budget', True)),
-                'use_exact_memory': data.get('use_exact_memory') is True}
+                'use_exact_memory': data.get('use_exact_memory') is True,
+                'custom_instructions': custom_instructions}
     from translation_app.services.projects import load_prompt_pair
     pair = load_prompt_pair(project_id, language)
     settings.update(system_prompt=pair['system'], instructions=pair['instructions'])
     if not project['direct']:
         settings['access_token'] = g.user['access_token']
     store = current_app.extensions['jobs']
-    if sum(item['status'] in {'queued', 'running'} for item in store.list(owner(), limit=100)) >= 3:
+    if sum(item['status'] in {'queued', 'running', 'cancelling'} for item in store.list(owner(), limit=100)) >= 3:
         raise ValueError('同时最多提交三个任务，请等待已有任务完成')
     job = store.create(owner(), project_id, language, filename, raw, mappings, settings)
     return jsonify(job), 202
@@ -249,6 +251,14 @@ def retry_job(job_id):
         return jsonify(error='任务不存在'), 404
     validate_selection(job['project_id'], job['language'])
     return jsonify(store.retry(owner(), job_id, g.user['access_token'])), 202
+
+
+@api.post('/jobs/<job_id>/cancel')
+def cancel_job(job_id):
+    job = current_app.extensions['jobs'].cancel(owner(), job_id)
+    if job is None:
+        return jsonify(error='任务不存在'), 404
+    return jsonify(job), 202 if job['status'] == 'cancelling' else 200
 
 
 @api.get('/jobs/<job_id>/download')

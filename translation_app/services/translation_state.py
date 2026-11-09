@@ -9,6 +9,9 @@ import time
 
 
 def check_cancelled(settings):
+    check = settings.get('_cancel_check')
+    if check:
+        check()
     event = settings.get('_cancel_event')
     if event is not None and event.is_set():
         raise RuntimeError('翻译任务已停止')

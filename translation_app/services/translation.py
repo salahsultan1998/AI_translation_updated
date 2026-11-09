@@ -121,6 +121,7 @@ def _call_model(rows, system_prompt, target_language, context, settings):
         status, usage = None, {}
         try:
             with provider_runtime.request_slot(settings):
+                check_cancelled(settings)
                 sent = time.perf_counter()
                 _timing(settings, 'request_start', attempt=attempt + 1, model=data['model'],
                         rows=len(rows), reasoning_enabled=data['reasoning']['enabled'],
@@ -186,10 +187,13 @@ def _call_model(rows, system_prompt, target_language, context, settings):
 def _request_data(rows, system_prompt, target_language, context, settings):
     model = settings.get("model") or os.getenv("OPENROUTER_MODEL", "qwen/qwen3.6-flash")
     payload_rows = [{"row_id": row_id, "source_text": source, "context": ctx} for row_id, source, ctx in rows]
-    instruction = settings.get("instructions", settings.get("custom_instructions", ""))
+    instruction = settings.get("instructions", "")
+    temporary = settings.get('custom_instructions', '').strip()
     user = (f"### TARGET LANGUAGE: {target_language}\n\n### REFERENCE CONTEXT:\n{context}\n\n"
-            f"### INSTRUCTIONS:\n{instruction}\n\n### SOURCE TEXT:\n"
-            + json.dumps(payload_rows, ensure_ascii=False))
+            f"### INSTRUCTIONS:\n{instruction}\n\n")
+    if temporary:
+        user += f'### TEMPORARY INSTRUCTIONS:\n{temporary}\n\n'
+    user += '### SOURCE TEXT:\n' + json.dumps(payload_rows, ensure_ascii=False)
     system = system_prompt
     return {"model": model, "messages": [{"role": "system", "content": system},
             {"role": "user", "content": user}], "temperature": 0.2,
@@ -346,7 +350,7 @@ def _translate_file(input_path, output_path, project_id, language, mappings, set
     timings['read_seconds'] = time.perf_counter() - mark
     pair = load_prompt_pair(project_id, language)
     prompt = settings.get('system_prompt', pair['system'])
-    settings.setdefault('instructions', settings.get('custom_instructions', pair['instructions']))
+    settings.setdefault('instructions', pair['instructions'])
     # Provisional progress is visible even while resources are being loaded.
     if progress:
         progress(0, len(unique))
@@ -364,6 +368,7 @@ def _translate_file(input_path, output_path, project_id, language, mappings, set
                            'fallback': os.getenv('OPENROUTER_FALLBACK_MODEL', ''),
                            'reasoning': {'enabled': False},
                            'instructions': settings['instructions'],
+                           'custom_instructions': settings.get('custom_instructions', ''),
                            'exact_memory': bool(settings.get('use_exact_memory')),
                            'terms': terms, 'memory': memory})
     checkpoint = Checkpoint(output_path, version)

@@ -49,12 +49,12 @@ class JobRecoveryTests(unittest.TestCase):
     def test_running_job_cannot_retry_but_expired_lease_can(self):
         job = self.create()
         self.store.claim('first')
-        with self.assertRaisesRegex(ValueError, '失败或中断'):
+        with self.assertRaisesRegex(ValueError, '只有失败'):
             self.store.retry('alice', job['id'])
         with closing(sqlite3.connect(self.store.database)) as db, db:
             db.execute('UPDATE jobs SET lease_until=? WHERE id=?', (time.time()-1, job['id']))
         self.assertEqual(self.store.retry('alice', job['id'])['status'], 'queued')
-        with self.assertRaisesRegex(ValueError, '失败或中断'):
+        with self.assertRaisesRegex(ValueError, '只有失败'):
             self.store.retry('alice', job['id'])
 
     def test_retry_respects_active_job_limit(self):
@@ -84,7 +84,7 @@ class JobRecoveryTests(unittest.TestCase):
         self.assertGreaterEqual(result['queue_seconds'], 0)
         self.assertGreaterEqual(result['started_at'], result['created_at'])
         self.assertFalse(result['can_retry'])
-        with self.assertRaisesRegex(ValueError, '失败或中断'):
+        with self.assertRaisesRegex(ValueError, '只有失败'):
             self.store.retry('alice', job['id'])
 
     def test_lost_lease_cancels_translation_and_rejects_phase_update(self):

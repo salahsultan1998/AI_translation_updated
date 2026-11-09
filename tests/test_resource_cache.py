@@ -32,6 +32,7 @@ class ResourceCacheTests(unittest.TestCase):
         self.requests = []
         self.term = 'Hero'
         self.after_load = None
+        self.after_page = None
 
         def create(*args, **kwargs):
             self.created += 1
@@ -52,6 +53,8 @@ class ResourceCacheTests(unittest.TestCase):
                     if name == 'translation_memory' and start and self.after_load:
                         self.after_load()
                     query.execute.return_value.data = data if start == 0 else []
+                    if self.after_page:
+                        self.after_page()
                     return query
 
                 query.range.side_effect = page
@@ -82,6 +85,15 @@ class ResourceCacheTests(unittest.TestCase):
         self.assertEqual([(name, start) for name, start, _ in self.requests],
                          [('glossaries', 0), ('glossaries', 1),
                           ('translation_memory', 0), ('translation_memory', 1)])
+
+    def test_cancel_stops_loading_remaining_database_pages(self):
+        import threading
+        cancelled = threading.Event()
+        self.after_page = cancelled.set
+        with self.assertRaisesRegex(RuntimeError, '已停止'):
+            self.load({'_cancel_event': cancelled})
+        self.assertEqual(len(self.requests), 1)
+        self.assertFalse(resources._CACHE)
 
     def test_auth_project_language_and_supabase_key_are_isolated(self):
         with patch.dict(os.environ, {'LOCATOOL_AUTH_ENABLED': 'true'}):

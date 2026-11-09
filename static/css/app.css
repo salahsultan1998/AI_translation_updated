@@ -9,3 +9,5 @@ label{display:grid;gap:8px;font-size:13px;font-weight:500}input:not([type=file])
 .prompt-panel{margin-top:16px}.prompt-heading{display:flex;align-items:start;justify-content:space-between;gap:16px}.prompt-editor{margin-top:24px;padding-top:24px;border-top:1px solid var(--border)}.prompt-editor textarea{min-height:180px;margin-top:12px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px;line-height:1.7}.prompt-actions{display:flex;align-items:center;gap:12px;margin-top:12px}.prompt-actions .muted{margin-right:auto}.prompt-base{margin-top:24px;padding-top:24px;border-top:1px solid var(--border)}.prompt-base summary{cursor:pointer;font-size:14px;font-weight:600}.prompt-base pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.7;background:var(--background);padding:16px;border-radius:8px}
 
 .inline-check{display:flex;align-items:flex-start;gap:8px;margin-top:16px}.inline-check input{flex:none;margin-top:2px}
+
+#stop-job{margin-right:12px}
