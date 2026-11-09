@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="home-top">
+  <div class="home-heading"><img src="{{ url_for('static', filename='images/app-icon.svg') }}" alt=""><div><h1 class="title">AI 本地化工作台</h1><p class="muted heading-note">选择一个项目，开始翻译</p></div></div>
+  {% if auth_enabled %}<form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="secondary compact" type="submit">退出登录</button></form>{% endif %}
+</header>
+<main class="project-grid" aria-label="选择项目">
+  {% set direct = projects | selectattr('direct') | first %}
+  <a class="project-card" href="/direct"><span class="project-icon" aria-hidden="true"><img src="{{ url_for('static', filename=direct.icon) }}" alt=""></span><h2>{{ direct.name }}</h2><p>不关联项目，快速翻译文本</p></a>
+  {% for project in projects if project.id != 'direct' %}
+  {% if project.enabled %}<a class="project-card" href="/projects/{{ project.id }}">{% else %}<div class="project-card disabled" aria-disabled="true">{% endif %}
+    <span class="project-icon" aria-hidden="true">{% if project.icon %}<img src="{{ url_for('static', filename=project.icon) }}" alt="">{% else %}<span>{{ project.name[:1] }}</span>{% endif %}</span>
+    <h2>{{ project.name }}</h2><p>{% if project.enabled %}进入项目工作台{% else %}项目暂未开放{% endif %}</p>
+  {% if project.enabled %}</a>{% else %}</div>{% endif %}
+  {% endfor %}
+</main>
+{% endblock %}

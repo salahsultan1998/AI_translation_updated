@@ -1,0 +1,12 @@
+{
+  "id": "baloot_challenges",
+  "name": "Baloot Challenges",
+  "database_id": "Baloot_Challenges",
+  "enabled": true,
+  "icon": "images/challeng_baloot.png",
+  "languages": [
+    "arabic"
+  ],
+  "project_prompt": "prompts/project.md",
+  "direct": false
+}

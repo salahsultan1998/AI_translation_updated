@@ -1,0 +1,2 @@
+- Pay close attention to Turkish vowel harmony, agglutinative suffix structures, and proper variable integration.
+- Keep UI strings extremely compact and natural for mobile gaming interfaces.

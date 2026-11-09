@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} · AI 本地化工作台{% endblock %}
+{% block content %}
+<div class="topline"><a class="back-link" href="/projects">← 返回项目</a>{% if auth_enabled %}<form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="text-button">退出登录</button></form>{% endif %}</div>
+<header class="workspace-heading">
+  <span class="workspace-icon" aria-hidden="true">{% if project.icon %}<img src="{{ url_for('static', filename=project.icon) }}" alt="">{% else %}{{ project.name[:1] }}{% endif %}</span>
+  <div><h1 class="title">{{ project.name }}</h1><p class="muted heading-note">{% if project.direct %}无需选择项目，直接翻译文本{% else %}项目本地化工作台{% endif %}</p></div>
+</header>
+<main id="workspace" data-project="{{ project.id }}" data-direct="{{ 'true' if project.direct else 'false' }}">
+  <div id="error" class="notice error" role="alert" hidden></div>
+  <div id="notice" class="notice success" role="status" hidden></div>
+  <section class="panel setup-panel">
+    <div><h2>目标语言</h2><p class="muted small">{% if project.direct %}选择本次翻译的语言。{% else %}仅显示此项目支持的语言。{% endif %}</p></div>
+    <label class="language-label"><span class="sr-only">目标语言</span><select id="language">{% for lang in project.languages %}<option value="{{ lang.id }}">{{ lang.name }}</option>{% endfor %}</select></label>
+  </section>
+  <div class="workspace-tabs" role="tablist" aria-label="工作区">
+    <button type="button" class="tab active" role="tab" aria-selected="true" data-tab="translate">翻译</button>
+    {% if not project.direct %}<button type="button" class="tab" role="tab" aria-selected="false" data-tab="knowledge">项目知识库</button>{% endif %}
+    <button type="button" class="tab" role="tab" aria-selected="false" data-tab="config">配置</button>
+  </div>
+  <div id="translate-panel" role="tabpanel">
+    <section class="panel">
+      <div class="section-heading"><div><h2>提供待翻译文本</h2><p class="muted small">上传文件，或直接输入文本和上下文。</p></div></div>
+      <div class="segmented" role="group" aria-label="输入方式"><button type="button" class="selected" data-input="file">文件上传</button><button type="button" data-input="manual">手动输入</button></div>
+      <div id="file-input">
+        <div class="file-row"><label class="file-picker"><span class="upload-symbol" aria-hidden="true">↑</span><span><strong id="upload-name">点击选择文件</strong><small>支持 CSV 和 XLSX 格式</small></span><input id="file" type="file" accept=".csv,.xlsx"></label><button type="button" class="secondary" id="preview-file">上传并预览</button></div>
+        <div id="sheet-config" class="sheet-config" hidden><div class="section-heading"><div><h3>选择工作表并配置列</h3><p class="muted small">每个工作表都可以使用不同的列。</p></div></div><div id="sheet-list"></div></div>
+      </div>
+      <div id="manual-input" hidden>
+        <p class="muted small">可从 Excel 复制多行并粘贴到任意单元格；三列分别为原文、上下文和译文。翻译完成后可继续编辑，修改不会自动保存，请在刷新页面前复制。</p>
+        <div class="manual-grid-wrap"><table class="manual-grid" aria-label="手动翻译表格"><thead><tr><th scope="col">行</th><th scope="col">原文</th><th scope="col">上下文（可选）</th><th scope="col">译文</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead><tbody id="manual-rows"></tbody></table></div>
+        <div class="manual-actions"><button type="button" class="secondary compact" id="add-row">＋ 添加一行</button><button type="button" class="secondary compact" id="copy-translations">复制全部译文</button><button type="button" class="secondary compact" id="copy-table">复制整表</button></div>
+      </div>
+      <details class="advanced"><summary>高级设置</summary><div class="fields three"><label>AI 模型<select id="model">{% for model in model_options|default([]) %}<option value="{{ model }}"{% if model == default_model %} selected{% endif %}>{{ model }}</option>{% endfor %}</select></label><label>分批方式<select id="batch-mode"><option value="auto">自动</option><option value="manual">手动</option></select></label><label id="batch-size-label" hidden>每批行数<input id="batch-size" type="number" value="10" min="1" max="50"></label></div><label>补充翻译要求<textarea id="instructions" rows="3" placeholder="可选：输入本次翻译需要遵循的要求"></textarea></label></details>
+      <div class="action-row"><button type="button" id="start-job">开始翻译</button></div>
+      <div id="job-status" class="job-status" hidden><div class="status-line"><span id="job-message" role="status" aria-live="polite"></span><span id="job-count" class="muted small"></span></div><progress id="job-progress" max="100" value="0" aria-label="翻译进度"></progress><a class="button secondary compact" id="download" hidden>下载原始翻译文件（不含表格修改） ↓</a></div>
+    </section>
+    <section id="result-panel" class="panel" hidden><h2>翻译结果预览</h2><p id="result-note" class="muted small">每个工作表显示前十行；完整结果请下载文件。</p><div id="result-sheets"></div></section>
+  </div>
+  <div id="config-panel" role="tabpanel" hidden>
+    <section class="panel prompt-panel">
+      <div class="prompt-heading"><div><h2>提示词配置</h2><p class="muted small">编辑 {{ project.name }} 的翻译规则</p></div><span id="prompt-language-name" class="muted small"></span></div>
+      <div id="prompt-message" class="notice" role="status" hidden></div>
+      <div id="prompt-editors"></div>
+      <details class="prompt-base"><summary>共享基础规则（只读）</summary><p class="muted small">所有项目都使用这些基础规则</p><pre id="prompt-base-content"></pre></details>
+    </section>
+  </div>
+  {% if not project.direct %}
+  <div id="knowledge-panel" role="tabpanel" hidden>
+    <section class="panel"><h2>项目风格与说明</h2><p class="muted small">定义此项目的写作风格与本地化要求。</p><label class="sr-only" for="profile">项目说明</label><textarea id="profile" rows="5" placeholder="例如：语气、术语和游戏背景"></textarea><div class="action-row"><button type="button" id="save-profile">保存项目说明</button></div></section>
+    <section class="panel"><h2>手动添加术语</h2><p class="muted small">添加当前语言的术语；发现已有术语时可选择保留或覆盖。</p><div id="term-rows"></div><div class="inline-actions"><button type="button" class="secondary compact" id="add-term">＋ 添加一行</button><button type="button" id="check-terms">检查并保存</button></div><div id="conflicts" hidden><h3>处理重复术语</h3><p class="muted small">逐条选择是否覆盖已有内容，也可以批量选择。</p><div class="conflict-actions"><button type="button" class="secondary compact" id="keep-all">全部保留已有内容</button><button type="button" class="secondary compact" id="overwrite-all">全部覆盖</button></div><div id="conflict-list"></div><button id="save-conflicts" type="button">确认并保存</button></div></section>
+    <section class="panel"><h2>上传知识库</h2><p class="muted small">将文件中的参考内容导入当前项目及目标语言。</p><div class="fields two"><label>导入类型<select id="knowledge-kind"><option value="terms">术语表</option><option value="translation_memory">翻译记忆</option></select></label><label>选择文件<input id="knowledge-file" type="file" accept=".csv,.xlsx"></label></div><button type="button" class="secondary compact" id="preview-knowledge">预览文件</button><div id="knowledge-mapping" hidden><div class="fields two"><label>工作表<select id="knowledge-sheet"></select></label><label>原文列<select id="knowledge-source"></select></label><label>译文列<select id="knowledge-target"></select></label><label>备注列（可选）<select id="knowledge-note"></select></label></div><div class="table-scroll"><table id="knowledge-preview"></table></div><div class="action-row"><button type="button" id="upload-knowledge">导入知识库</button></div></div></section>
+  </div>
+  {% endif %}
+</main>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/workspace.js') }}" defer></script>{% endblock %}

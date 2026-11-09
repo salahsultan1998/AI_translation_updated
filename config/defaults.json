@@ -1,0 +1,7 @@
+{
+  "model_options": [
+    "qwen/qwen3.6-flash",
+    "google/gemini-3.7-flash"
+  ],
+  "default_model": "qwen/qwen3.6-flash"
+}

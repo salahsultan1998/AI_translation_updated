@@ -1,0 +1,13 @@
+{
+  "id": "sawa",
+  "name": "sawa",
+  "database_id": "sawa",
+  "enabled": true,
+  "icon": "images/sawa.png",
+  "languages": [
+    "arabic",
+    "turkish"
+  ],
+  "project_prompt": "prompts/project.md",
+  "direct": false
+}

@@ -1,0 +1,13 @@
+{
+  "id": "direct",
+  "name": "直接翻译",
+  "database_id": null,
+  "enabled": true,
+  "direct": true,
+  "icon": "images/direct.png",
+  "languages": [
+    "arabic",
+    "english",
+    "turkish"
+  ]
+}

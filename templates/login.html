@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}登录 · AI 本地化工作台{% endblock %}
+{% block content %}
+<main class="login-layout">
+  <div class="brand"><img src="{{ url_for('static', filename='images/app-icon.svg') }}" alt=""><span>AI 本地化工作台</span></div>
+  <section class="panel login-panel" aria-labelledby="login-title">
+    <h1 id="login-title">欢迎回来</h1><p class="muted">登录后选择项目，开始本地化工作。</p>
+    {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+    <form method="post" action="/login" class="stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>邮箱<input type="email" name="email" autocomplete="username" required></label>
+      <label>密码<input type="password" name="password" autocomplete="current-password" required></label>
+      <button type="submit">登录</button>
+    </form>
+  </section>
+</main>
+{% endblock %}

@@ -1,0 +1,12 @@
+{
+  "id": "s06",
+  "name": "S06",
+  "database_id": "S06",
+  "enabled": true,
+  "icon": "images/s06.jpeg",
+  "languages": [
+    "english"
+  ],
+  "project_prompt": "prompts/project.md",
+  "direct": false
+}

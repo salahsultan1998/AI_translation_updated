@@ -1,0 +1,6 @@
+{
+  "id": "english",
+  "name": "英语",
+  "database_name": "English",
+  "instructions": "instructions.md"
+}
