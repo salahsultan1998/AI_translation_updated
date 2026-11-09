@@ -1,6 +1,5 @@
 """Background translation engine, independent of Flask and browser state."""
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from functools import lru_cache
 import json
 import logging
 import math
@@ -45,9 +44,11 @@ class _ContextIndex:
             self.rapid = (process, fuzz)
         except ImportError:
             pass
-        self.references = lru_cache(maxsize=4096)(self.references)
+        self._references = {}
 
     def references(self, source):
+        if source in self._references:
+            return self._references[source]
         matches = (term for _, term in self.automaton.iter(source)) if self.automaton else (
             term for term in self.terms if term and term in source)
         terms = set()
@@ -65,7 +66,11 @@ class _ContextIndex:
         else:
             from difflib import get_close_matches
             memory_matches = get_close_matches(source, self.sources, n=2, cutoff=.85)
-        return terms, {f"{match} -> {self.memory[match]}" for match in memory_matches}
+        result = terms, {f"{match} -> {self.memory[match]}" for match in memory_matches}
+        if len(self._references) >= 256:
+            self._references.pop(next(iter(self._references)))
+        self._references[source] = result
+        return result
 
     def build(self, rows):
         pieces, found_terms, found_memory = [], set(), set()
@@ -82,8 +87,27 @@ class _ContextIndex:
         return "\n\n".join(pieces)
 
 
+def _timing(settings, step, **values):
+    logging.getLogger(__name__).info('[timing] job=%s step=%s %s',
+        settings.get('_job_id', 'standalone'), step,
+        ' '.join(f'{key}={value}' for key, value in values.items()))
+
+
 def _call_model(rows, system_prompt, target_language, context, settings):
+    prepared_at = time.perf_counter()
     data = _request_data(rows, system_prompt, target_language, context, settings)
+    _timing(settings, "prepare_request", seconds=f"{time.perf_counter() - prepared_at:.4f}", rows=len(rows))
+    logger = logging.getLogger(__name__)
+    job_id = settings.get('_job_id', 'standalone')
+    messages = data['messages']
+    logger.info('[prompt] job=%s rows=%s system_chars=%s user_chars=%s total_chars=%s estimated_input_tokens=%s',
+                job_id, len(rows), len(messages[0]['content']), len(messages[1]['content']),
+                sum(len(item['content']) for item in messages),
+                sum(_estimate_tokens(item['content']) + 8 for item in messages))
+    if os.getenv('TRANSLATION_LOG_PROMPTS', 'true').lower() in {'1', 'true', 'yes', 'on'}:
+        for item in messages:
+            logger.info('[prompt] job=%s role=%s BEGIN\n%s\n[prompt] job=%s role=%s END',
+                        job_id, item['role'], item['content'], job_id, item['role'])
     key = os.environ.get("OPENROUTER_API_KEY")
     if not key:
         raise ValueError("未配置翻译服务密钥")
@@ -100,6 +124,8 @@ def _call_model(rows, system_prompt, target_language, context, settings):
         try:
             with provider_runtime.request_slot(settings):
                 sent = time.perf_counter()
+                _timing(settings, 'request_start', attempt=attempt + 1, model=data['model'],
+                        rows=len(rows), slot_wait_seconds=f'{sent - waiting:.4f}')
                 response = provider_runtime.post(endpoint, headers={"Authorization": f"Bearer {key}"},
                                                  json=data, timeout=(10, 90))
             status = response.status_code
@@ -129,6 +155,9 @@ def _call_model(rows, system_prompt, target_language, context, settings):
         except requests.RequestException:
             raise RuntimeError("翻译服务连接中断，请检查网络后重新提交") from None
         finally:
+            if sent is not None:
+                _timing(settings, 'request_end', attempt=attempt + 1, status=status,
+                        seconds=f'{time.perf_counter() - sent:.4f}', **usage)
             record = settings.get('_record_request')
             if record and sent is not None:
                 record({'seconds': time.perf_counter() - sent, 'wait_seconds': sent - waiting,
@@ -141,6 +170,7 @@ def _call_model(rows, system_prompt, target_language, context, settings):
                 delay = max(delay, min(30, float(response.headers.get('Retry-After', '0'))))
             except (ValueError, TypeError):
                 pass
+        _timing(settings, 'retry_wait', seconds=delay)
         event = settings.get('_cancel_event')
         if event is None:
             time.sleep(delay)
@@ -207,16 +237,22 @@ def _prepare_batches(rows, batch_size, smart):
         else:
             seen[key] = row_id
             unique.append((row_id, source, context))
+    return list(_iter_batches(unique, batch_size, smart)), aliases
+
+
+def _iter_batches(rows, batch_size, smart):
     budget = provider_runtime.int_setting('TRANSLATION_OUTPUT_TOKEN_BUDGET', 4000, 256, 32000)
-    batches, batch = [], []
-    for row in unique:
-        if batch and (len(batch) >= batch_size or (smart and _output_estimate(batch + [row]) > budget)):
-            batches.append(batch)
+    batch, output_tokens = [], 0
+    for row in rows:
+        row_tokens = _output_estimate([row])
+        if batch and (len(batch) >= batch_size or (smart and output_tokens + row_tokens > budget)):
+            yield batch
             batch = []
+            output_tokens = 0
         batch.append(row)
+        output_tokens += row_tokens
     if batch:
-        batches.append(batch)
-    return batches, aliases
+        yield batch
 
 
 def _budget_batches(batch, index, prompt, language, settings, input_budget):
@@ -238,7 +274,8 @@ def translate_file(input_path, output_path, project_id, language, mappings, sett
     """Bounded parallel translation with validated, job-local recovery checkpoints."""
     settings = dict(settings or {})
     settings.setdefault('_cancel_event', threading.Event())
-    performance = {'timings': {}, 'records': [], 'rows': 0, 'stage': 'waiting'}
+    performance = {'timings': {}, 'records': [], 'rows': 0, 'stage': 'waiting',
+                   'stage_started': time.perf_counter()}
     settings['_performance'] = performance
     started = time.perf_counter()
     succeeded = False
@@ -249,6 +286,9 @@ def translate_file(input_path, output_path, project_id, language, mappings, sett
             succeeded = True
             return result
     finally:
+        _timing(settings, performance['stage'] + '_end',
+                seconds=f"{time.perf_counter() - performance['stage_started']:.4f}")
+        _timing(settings, 'total', seconds=f'{time.perf_counter() - started:.4f}', succeeded=succeeded)
         logging.getLogger(__name__).info('Translation attempt: %s', json.dumps({
             'job_id': settings.get('_job_id'), 'succeeded': succeeded, 'stage': performance['stage'],
             'rows': performance['rows'], 'duration_seconds': round(time.perf_counter() - started, 4),
@@ -271,15 +311,20 @@ def _translate_file(input_path, output_path, project_id, language, mappings, set
 
     def stage(name):
         check_cancelled(settings)
-        performance['stage'] = name
+        if name != performance['stage']:
+            now = time.perf_counter()
+            _timing(settings, performance['stage'] + '_end',
+                    seconds=f"{now - performance['stage_started']:.4f}")
+            performance['stage'], performance['stage_started'] = name, now
+            _timing(settings, name + '_start')
         if stage_callback:
             stage_callback(name)
 
     project, lang = validate_selection(project_id, language)
-    batch_size = settings.get('batch_size', 30)
+    batch_size = settings.get('batch_size', 10)
     if type(batch_size) is not int or not 1 <= batch_size <= 50:
         raise ValueError('每批行数必须在 1 到 50 之间')
-    concurrency = provider_runtime.int_setting('TRANSLATION_CONCURRENCY', 3, 1, 16)
+    concurrency = provider_runtime.int_setting('TRANSLATION_CONCURRENCY', 1, 1, 16)
     input_budget = provider_runtime.int_setting('TRANSLATION_INPUT_TOKEN_BUDGET', 6000, 256, 64000)
     settings['_output_budget'] = provider_runtime.int_setting('TRANSLATION_OUTPUT_TOKEN_BUDGET', 4000, 256, 32000)
     stage('reading')
@@ -341,11 +386,17 @@ def _translate_file(input_path, output_path, project_id, language, mappings, set
             translated.update(exact)
         pending_rows = [row for row in unique if row[0] not in translated]
         index = _ContextIndex(terms, memory, profile)
-        initial, _ = _prepare_batches(pending_rows, batch_size, bool(settings.get('use_smart_budget', True)))
-        plans = []
-        for batch in initial:
-            check_cancelled(settings)
-            plans.extend(_budget_batches(batch, index, prompt, lang['database_name'], settings, input_budget))
+
+        def plans():
+            for batch in _iter_batches(pending_rows, batch_size, bool(settings.get('use_smart_budget', True))):
+                check_cancelled(settings)
+                prepared_at = time.perf_counter()
+                for plan in _budget_batches(batch, index, prompt, lang['database_name'], settings, input_budget):
+                    _timing(settings, 'context_and_budget', rows=len(plan[0]),
+                            seconds=f'{time.perf_counter() - prepared_at:.4f}')
+                    yield plan
+                    prepared_at = time.perf_counter()
+
         timings['planning_seconds'] = time.perf_counter() - mark
         completed = len(translated)
         if progress:
@@ -353,13 +404,18 @@ def _translate_file(input_path, output_path, project_id, language, mappings, set
         stage('translating')
         mark = time.perf_counter()
         error = None
-        iterator = iter(plans)
+        iterator = iter(plans())
+        batch_count = 0
 
         def run(plan):
             check_cancelled(settings)
             batch, context = plan
             raw = (provider or _call_model)(batch, prompt, lang['database_name'], context, settings)
-            return _check_response(batch, raw)
+            checked_at = time.perf_counter()
+            result = _check_response(batch, raw)
+            _timing(settings, 'validate_response', rows=len(batch),
+                    seconds=f'{time.perf_counter() - checked_at:.4f}')
+            return result
 
         # Only keep concurrency requests in flight, so failure never leaves an
         # unbounded queue of potentially billable calls. Drain already sent calls
@@ -368,12 +424,22 @@ def _translate_file(input_path, output_path, project_id, language, mappings, set
             active = {}
 
             def submit():
-                plan = next(iterator, None)
+                nonlocal error, batch_count
+                try:
+                    plan = next(iterator, None)
+                except Exception as failure:
+                    error = failure
+                    settings['_cancel_event'].set()
+                    return False
                 if plan is not None:
                     active[pool.submit(run, plan)] = plan
+                    batch_count += 1
+                    return True
+                return False
 
-            for _ in range(min(concurrency, len(plans))):
-                submit()
+            for _ in range(concurrency):
+                if not submit():
+                    break
             last_check = time.monotonic()
             while active:
                 done, _ = wait(active, timeout=.25, return_when=FIRST_COMPLETED)
@@ -388,7 +454,10 @@ def _translate_file(input_path, output_path, project_id, language, mappings, set
                     active.pop(future)
                     try:
                         output = future.result()
+                        saved_at = time.perf_counter()
                         checkpoint.save(output)
+                        _timing(settings, 'checkpoint_save', rows=len(output),
+                                seconds=f'{time.perf_counter() - saved_at:.4f}')
                         translated.update(output)
                         completed += len(output)
                         if error is None and progress:
@@ -399,7 +468,8 @@ def _translate_file(input_path, output_path, project_id, language, mappings, set
                             settings['_cancel_event'].set()
                 if error is None:
                     for _ in done:
-                        submit()
+                        if not submit():
+                            break
         timings['translation_seconds'] = time.perf_counter() - mark
         if error:
             raise error
@@ -417,7 +487,7 @@ def _translate_file(input_path, output_path, project_id, language, mappings, set
         finally:
             temp.unlink(missing_ok=True)
         timings['write_seconds'] = time.perf_counter() - mark
-        summary = {'rows': len(positions), 'batches': len(plans), 'sheets': len(mapped),
+        summary = {'rows': len(positions), 'batches': batch_count, 'sheets': len(mapped),
                    'unique_rows': len(unique), 'deduplicated_rows': len(positions) - len(unique),
                    'restored_rows': restored, 'memory_rows': len(exact), 'concurrency': concurrency,
                    'timings': {key: round(value, 4) for key, value in timings.items()},

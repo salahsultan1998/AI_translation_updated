@@ -7,6 +7,21 @@ from translation_app.services.translation import _call_model
 
 
 class ProviderRequestTests(unittest.TestCase):
+    def test_prompt_logs_show_input_lengths_and_optional_full_content_without_api_key(self):
+        for enabled in ('true', 'false'):
+            with patch.dict('os.environ', {'OPENROUTER_API_KEY': 'secret-test-key',
+                                          'TRANSLATION_LOG_PROMPTS': enabled}), \
+                 patch('translation_app.services.translation.provider_runtime.post', return_value=self.response(200)), \
+                 self.assertLogs('translation_app.services.translation', level='INFO') as captured:
+                self.call()
+            logs = '\n'.join(captured.output)
+            self.assertIn('system_chars=', logs)
+            self.assertIn('user_chars=', logs)
+            self.assertIn('estimated_input_tokens=', logs)
+            self.assertNotIn('secret-test-key', logs)
+            self.assertEqual('role=system BEGIN' in logs, enabled == 'true')
+            self.assertEqual('测试' in logs, enabled == 'true')
+
     def call(self):
         return _call_model([(0, '测试', '')], 'Translate.', 'English', '', {'model': 'primary'})
 

@@ -59,6 +59,17 @@ def scoped_project(project_id, language=None):
     return project, lang['database_name']
 
 
+@api.post('/projects/<project_id>/knowledge/preload')
+def preload_knowledge(project_id):
+    project, language = validate_selection(project_id, payload().get('language'))
+    if project['direct']:
+        raise ValueError('直接翻译不使用项目知识库')
+    from translation_app.services.resources import preload_resources
+    settings = {'access_token': g.user['access_token'],
+                '_limiter_root': str(current_app.extensions['jobs'].root / 'provider-slots')}
+    return jsonify(preload_resources(project, language, settings))
+
+
 def upload_root():
     key = hashlib.sha256(owner().encode()).hexdigest()
     path = Path(current_app.config['STORAGE_ROOT']) / 'uploads' / key
@@ -133,7 +144,7 @@ def create_job():
     model = data.get('model') or default
     if model not in options:
         raise ValueError('模型配置无效')
-    size = data.get('batch_size', 30)
+    size = data.get('batch_size', 10)
     if type(size) is not int or not 1 <= size <= 50:
         raise ValueError('每批行数必须在 1 到 50 之间')
     instructions = data.get('custom_instructions', '')

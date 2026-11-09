@@ -61,5 +61,8 @@ class Checkpoint:
 
 def fingerprint(value):
     from hashlib import sha256
-    return sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
-                             separators=(',', ':')).encode()).hexdigest()
+    digest = sha256()
+    encoder = json.JSONEncoder(ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    for chunk in encoder.iterencode(value):
+        digest.update(chunk.encode())
+    return digest.hexdigest()

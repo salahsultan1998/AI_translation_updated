@@ -1,14 +1,18 @@
 import csv
+from hashlib import sha256
+import json
 from pathlib import Path
 import tempfile
 import threading
 import time
 import unittest
+import weakref
 from unittest.mock import patch
 
 from openpyxl import Workbook, load_workbook
 
-from translation_app.services.translation import translate_file
+from translation_app.services.translation import _ContextIndex, translate_file
+from translation_app.services.translation_state import fingerprint
 
 
 class TranslationPerformanceTests(unittest.TestCase):
@@ -188,3 +192,63 @@ class TranslationPerformanceTests(unittest.TestCase):
         self.assertNotIn('private instruction', '\n'.join(logs.output))
         self.assertIn('resources_seconds', result['timings'])
         self.assertEqual(result['requests']['attempts'], 0)  # injected providers do not fake HTTP metrics
+
+    def test_default_prepares_context_only_as_batches_are_consumed(self):
+        self.write([(f'row {i}', '', '') for i in range(100)])
+        events = []
+        build = _ContextIndex.build
+
+        def track(index, rows):
+            events.append('context')
+            return build(index, rows)
+
+        def provider(rows, *_):
+            events.append('request')
+            return self.provider(rows)
+
+        with patch.dict('os.environ', {'TRANSLATION_CONCURRENCY': '1'}), \
+             patch.object(_ContextIndex, 'build', track):
+            result = self.translate(provider=provider)
+        self.assertEqual(result['batches'], 10)
+        self.assertEqual(result['concurrency'], 1)
+        self.assertEqual(events, ['context', 'request'] * 10)
+
+    def test_late_budget_failure_preserves_already_sent_success(self):
+        self.write([('short', '', ''), ('字' * 500, '', '')])
+        sent = threading.Event()
+        build = _ContextIndex.build
+
+        def track(index, rows):
+            if rows[0][0] == 1:
+                self.assertTrue(sent.wait(3))
+            return build(index, rows)
+
+        def provider(rows, *_):
+            sent.set()
+            time.sleep(.02)
+            return self.provider(rows)
+
+        with patch.dict('os.environ', {'TRANSLATION_CONCURRENCY': '2',
+                                       'TRANSLATION_OUTPUT_TOKEN_BUDGET': '256'}), \
+             patch.object(_ContextIndex, 'build', track):
+            with self.assertRaisesRegex(ValueError, 'Token 预算'):
+                self.translate({'batch_size': 1}, provider)
+        self.assertFalse(self.output.exists())
+        with patch.dict('os.environ', {'TRANSLATION_OUTPUT_TOKEN_BUDGET': '4000'}):
+            result = self.translate({'batch_size': 1})
+        self.assertEqual(result['restored_rows'], 1)
+        self.assertEqual(result['batches'], 1)
+
+    def test_context_index_does_not_retain_knowledge_after_job(self):
+        index = _ContextIndex({}, {'original': 'translation'}, '')
+        index.references('original')
+        reference = weakref.ref(index)
+        del index
+        self.assertIsNone(reference())
+
+    def test_streamed_fingerprint_preserves_existing_checkpoint_hashes(self):
+        value = {'memory': {str(i): '你好 بالعربية' * 20 for i in range(1000)},
+                 'positions': [(('sheet', 0), 0)], 'instructions': ''}
+        original = sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                     separators=(',', ':')).encode()).hexdigest()
+        self.assertEqual(fingerprint(value), original)

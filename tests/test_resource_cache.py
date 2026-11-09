@@ -106,11 +106,53 @@ class ResourceCacheTests(unittest.TestCase):
             self.load()
             self.load()
         self.assertEqual(self.created, 2)
-        with patch('translation_app.services.resources.time.monotonic', return_value=100):
+        with patch('translation_app.services.resources.time.time', return_value=100):
             self.load()
-        with patch('translation_app.services.resources.time.monotonic', return_value=131):
+        with patch('translation_app.services.resources.time.time', return_value=131):
             self.load()
         self.assertEqual(self.created, 4)
+
+    def test_default_reuses_preloaded_snapshots(self):
+        with patch.dict(os.environ):
+            os.environ.pop('TRANSLATION_RESOURCE_CACHE_SECONDS', None)
+            self.load()
+            self.load()
+        self.assertEqual(self.created, 1)
+        self.assertTrue(resources._CACHE)
+
+    def test_separate_worker_process_reuses_web_preload_without_database_calls(self):
+        self.load()
+        code = """
+from unittest.mock import patch
+from translation_app.services.resources import load_resources
+with patch('translation_app.services.database.ProjectDatabase', side_effect=AssertionError('unexpected database call')):
+    result = load_resources({'direct':False,'database_id':'S06'}, {'database_name':'English'}, {})
+    assert result[0]['英雄']['target'] == 'Hero'
+    assert result[1]['你好'] == 'Hello'
+    assert result[2] == 'tone'
+"""
+        subprocess.run([sys.executable, '-c', code], check=True, capture_output=True)
+        path = resources._version_path('s06').parent.parent / 'resource-cache' / 'snapshots.sqlite3'
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertNotIn(b'public-key', path.read_bytes())
+
+    def test_simultaneous_preload_and_translation_load_only_once(self):
+        from concurrent.futures import ThreadPoolExecutor
+        self.after_profile = lambda: time.sleep(.03)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(self.load) for _ in range(2)]
+            results = [future.result(timeout=3) for future in futures]
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(self.created, 1)
+
+    def test_preload_reports_remaining_lifetime_instead_of_extending_old_cache(self):
+        with patch('translation_app.services.resources.time.time', return_value=100):
+            self.load()
+        with patch('translation_app.services.resources.time.time', return_value=125):
+            result = resources.preload_resources({**self.project, 'id': 's06'},
+                                                {**self.language, 'id': 'english'}, {})
+        self.assertEqual(result['expires_in'], 5)
+        self.assertEqual(self.created, 1)
 
     def test_expired_jwt_cannot_use_previously_cached_snapshot(self):
         token = self.token('alice', time.time() + 10)

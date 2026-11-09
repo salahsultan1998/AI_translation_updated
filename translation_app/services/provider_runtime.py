@@ -45,7 +45,7 @@ def request_slot(settings):
     belong to open file descriptions, so threads also contend, and process exit
     releases them without a lease timeout. Never unlink live slot files.
     """
-    limit = int_setting('TRANSLATION_GLOBAL_CONCURRENCY', 4, 1, 32)
+    limit = int_setting('TRANSLATION_GLOBAL_CONCURRENCY', 1, 1, 32)
     event = settings.get('_cancel_event')
     root = _slot_root(settings)
     root.mkdir(parents=True, exist_ok=True, mode=0o700)

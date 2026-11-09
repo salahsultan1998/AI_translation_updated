@@ -131,7 +131,7 @@ class RetryApiTests(unittest.TestCase):
         self.assertEqual(result.get_json()['id'], job_id)
         claimed = self.store.claim('replacement')
         self.assertEqual(claimed['settings']['custom_instructions'], 'original')
-        self.assertEqual(claimed['settings']['batch_size'], 30)
+        self.assertEqual(claimed['settings']['batch_size'], 10)
         self.assertFalse(claimed['settings']['use_exact_memory'])
         self.assertEqual(self.client.post(f'/api/jobs/{job_id}/retry', headers=self.headers).status_code, 400)
         page = self.client.get('/direct').text

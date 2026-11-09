@@ -11,6 +11,47 @@
   workerHint.setAttribute('role', 'status');
   workerHint.hidden = true;
   $('job-status').appendChild(workerHint);
+  const resourcePreloads = new Map();
+  const knowledgeStatus = node('p', '', 'muted small');
+  knowledgeStatus.setAttribute('role', 'status');
+  if (!isDirect) $('language').closest('section').insertAdjacentElement('afterend', knowledgeStatus);
+  function preloadResources(language) {
+    const existing = resourcePreloads.get(language);
+    if (existing && existing.expires > Date.now()) {
+      if (existing.result && $('language').value === language) showKnowledgeStatus(existing.result);
+      return existing.promise;
+    }
+    const entry = {expires: Infinity};
+    resourcePreloads.set(language, entry);
+    if ($('language').value === language) knowledgeStatus.textContent = '正在加载项目知识库…';
+    entry.promise = request(`/api/projects/${encodeURIComponent(projectId)}/knowledge/preload`, {
+      method: 'POST', body: {language}
+    }).then(result => {
+      entry.expires = Date.now() + result.expires_in * 1000;
+      entry.result = result;
+      if ($('language').value === language && resourcePreloads.get(language) === entry) {
+        showKnowledgeStatus(result);
+      }
+      return result;
+    }).catch(error => {
+      if (resourcePreloads.get(language) === entry) {
+        resourcePreloads.delete(language);
+        if ($('language').value === language) knowledgeStatus.textContent = '知识库加载失败，点击开始翻译时将重试。';
+      }
+      throw error;
+    });
+    return entry.promise;
+  }
+  function showKnowledgeStatus(result) {
+    knowledgeStatus.textContent = result.expires_in > 0
+      ? `知识库已就绪 · ${result.terms} 条术语 · ${result.memory} 条翻译记忆`
+      : '知识库已加载，但缓存未启用，翻译时会重新加载。';
+  }
+  function refreshKnowledge() {
+    resourcePreloads.clear();
+    preloadResources($('language').value).catch(() => {});
+  }
+
   function showError(message) { $('error').textContent = message; $('error').hidden = false; $('notice').hidden = true; }
   function showNotice(message) { $('notice').textContent = message; $('notice').hidden = false; $('error').hidden = true; }
   function clearMessages() { $('error').hidden = true; $('notice').hidden = true; }
@@ -299,7 +340,7 @@
     catch (e) { $('start-job').disabled = false; showError(e.message); }
   }
   $('start-job').addEventListener('click', async () => {
-    clearMessages(); try { const payload = jobPayload(); $('start-job').disabled = true; const job = await request('/api/jobs', {method:'POST',body:payload}); state.submittedJob = payload.manual_rows ? job.id : null; $('result-panel').hidden = true; presentJob(job); if (state.timer) clearTimeout(state.timer); poll(job.id); } catch (e) { $('start-job').disabled = false; showError(e.message); }
+    clearMessages(); try { const payload = jobPayload(); $('start-job').disabled = true; if (!isDirect) await preloadResources(payload.language); const job = await request('/api/jobs', {method:'POST',body:payload}); state.submittedJob = payload.manual_rows ? job.id : null; $('result-panel').hidden = true; presentJob(job); if (state.timer) clearTimeout(state.timer); poll(job.id); } catch (e) { $('start-job').disabled = false; showError(e.message); }
   });
   $('retry-job').addEventListener('click', async () => {
     if (!state.retryJob) return;
@@ -337,11 +378,16 @@
     previousLanguageName = current;
   });
   if (isDirect) return;
+  preloadResources($('language').value).catch(() => {});
+  $('language').addEventListener('change', () => {
+    knowledgeStatus.textContent = '正在加载项目知识库…';
+    preloadResources($('language').value).catch(() => {});
+  });
   async function loadProfile() { try { const result = await request(`/api/projects/${encodeURIComponent(projectId)}/profile`); $('profile').value = result.profile || ''; } catch (e) { showError(e.message); } }
-  $('save-profile').addEventListener('click', async () => { clearMessages(); try { await request(`/api/projects/${encodeURIComponent(projectId)}/profile`, {method:'POST',body:{profile:$('profile').value}}); showNotice('项目说明已保存。'); } catch (e) { showError(e.message); } });
+  $('save-profile').addEventListener('click', async () => { clearMessages(); try { await request(`/api/projects/${encodeURIComponent(projectId)}/profile`, {method:'POST',body:{profile:$('profile').value}}); showNotice('项目说明已保存。'); refreshKnowledge(); } catch (e) { showError(e.message); } });
   $('add-term').addEventListener('click', addTermRow); addTermRow();
   function collectTerms() { return [...document.querySelectorAll('.term-row')].map(row => ({ source:row.querySelector('.term-source').value.trim(), target:row.querySelector('.term-target').value.trim(), note:row.querySelector('.term-note').value.trim() })).filter(pair => pair.source && pair.target); }
-  async function saveTerms(pairs) { if (!pairs.length) { $('conflicts').hidden = true; showNotice('已保留所有现有术语，无需保存。'); return; } const result = await request(`/api/projects/${encodeURIComponent(projectId)}/glossary/save`, {method:'POST',body:{language:$('language').value,pairs}}); $('conflicts').hidden = true; showNotice(`已保存 ${result.count} 条术语。`); }
+  async function saveTerms(pairs) { if (!pairs.length) { $('conflicts').hidden = true; showNotice('已保留所有现有术语，无需保存。'); return; } const result = await request(`/api/projects/${encodeURIComponent(projectId)}/glossary/save`, {method:'POST',body:{language:$('language').value,pairs}}); $('conflicts').hidden = true; showNotice(`已保存 ${result.count} 条术语。`); refreshKnowledge(); }
   $('check-terms').addEventListener('click', async () => { clearMessages(); try { const pairs = collectTerms(); if (!pairs.length) throw new Error('请至少填写一条完整的原文和译文。'); const result = await request(`/api/projects/${encodeURIComponent(projectId)}/glossary/check`, {method:'POST',body:{language:$('language').value,pairs}}); state.cleanPairs = result.clean_pairs || []; state.conflicts = result.conflicts || []; if (!state.conflicts.length) { await saveTerms(state.cleanPairs); return; } const list = $('conflict-list'); list.replaceChildren(); state.conflicts.forEach(conflict => { const card = node('div',null,'conflict-card'); card.append(node('strong',conflict.source),node('p',`已有：${conflict.existing_target} ${conflict.existing_note || ''}`),node('p',`新内容：${conflict.new_target} ${conflict.new_note || ''}`)); const overwrite = node('input'); overwrite.type = 'checkbox'; const label = node('label'); label.append(overwrite, node('span','用新内容覆盖')); card.appendChild(label); list.appendChild(card); }); $('conflicts').hidden = false; } catch (e) { showError(e.message); } });
   $('save-conflicts').addEventListener('click', async () => { try { const selected = [...$('conflict-list').children].flatMap((card, index) => card.querySelector('input').checked ? [{source:state.conflicts[index].source,target:state.conflicts[index].new_target,note:state.conflicts[index].new_note || ''}] : []); await saveTerms([...state.cleanPairs,...selected]); } catch (e) { showError(e.message); } });
   $('keep-all').addEventListener('click', () => document.querySelectorAll('#conflict-list input').forEach(input => { input.checked = false; }));
@@ -351,5 +397,5 @@
   function updateKnowledgeSheet() { const sheet = state.knowledge.sheets.find(s => s.name === $('knowledge-sheet').value); if (!sheet) return; selectOptions($('knowledge-source'),sheet.columns); selectOptions($('knowledge-target'),sheet.columns); if (sheet.columns.length > 1) $('knowledge-target').selectedIndex = 1; selectOptions($('knowledge-note'),sheet.columns,true); table($('knowledge-preview'),sheet.columns,sheet.rows || []); }
   $('knowledge-sheet').addEventListener('change', updateKnowledgeSheet);
   $('preview-knowledge').addEventListener('click', async () => { clearMessages(); try { state.knowledge = await previewUpload($('knowledge-file')); selectOptions($('knowledge-sheet'), state.knowledge.sheets.map(sheet => sheet.name)); updateKnowledgeSheet(); $('knowledge-mapping').hidden = false; } catch (e) { showError(e.message); } });
-  $('upload-knowledge').addEventListener('click', async () => { clearMessages(); try { if (!state.knowledge || !$('knowledge-file').files[0]) throw new Error('请先上传并预览文件。'); const body = new FormData(); body.append('file',$('knowledge-file').files[0]); for (const [key,id] of [['language','language'],['kind','knowledge-kind'],['sheet','knowledge-sheet'],['source','knowledge-source'],['target','knowledge-target'],['note','knowledge-note']]) body.append(key,$(id).value); const result = await request(`/api/projects/${encodeURIComponent(projectId)}/knowledge/upload`, {method:'POST',body}); showNotice(`已导入 ${result.count} 条记录。`); } catch (e) { showError(e.message); } });
+  $('upload-knowledge').addEventListener('click', async () => { clearMessages(); try { if (!state.knowledge || !$('knowledge-file').files[0]) throw new Error('请先上传并预览文件。'); const body = new FormData(); body.append('file',$('knowledge-file').files[0]); for (const [key,id] of [['language','language'],['kind','knowledge-kind'],['sheet','knowledge-sheet'],['source','knowledge-source'],['target','knowledge-target'],['note','knowledge-note']]) body.append(key,$(id).value); const result = await request(`/api/projects/${encodeURIComponent(projectId)}/knowledge/upload`, {method:'POST',body}); showNotice(`已导入 ${result.count} 条记录。`); refreshKnowledge(); } catch (e) { showError(e.message); } });
 })();
