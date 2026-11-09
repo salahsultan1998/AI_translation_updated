@@ -140,6 +140,51 @@ def _validate_mapping(headers, mapping):
     return headers.index(source), headers.index(context) if context else None, target.strip()
 
 
+def has_mapped_rows(path, mappings):
+    """Validate mappings and find a source in an already-inspected immutable upload.
+
+    This deliberately stops reading data once a source is found. inspect_file()
+    must have checked the entire unchanged file first; the worker still performs
+    its normal complete validation with read_mapped_rows(). Every selected sheet
+    header/mapping is checked even after a source was found in an earlier sheet.
+    """
+    path = Path(path)
+    if not isinstance(mappings, dict) or not mappings:
+        raise ValueError("请选择至少一个工作表")
+    if path.suffix.lower() == ".csv":
+        if set(mappings) != {CSV_SHEET}:
+            raise ValueError("CSV 工作表映射无效")
+        with _csv_rows(path) as (_, headers, rows):
+            source_idx, _, _ = _validate_mapping(headers, mappings[CSV_SHEET])
+            return any(_display(row[source_idx] if source_idx < len(row) else None).strip()
+                       for _, row in rows)
+    if path.suffix.lower() != ".xlsx":
+        raise ValueError("仅支持 CSV 和 XLSX 文件")
+    book = _open_workbook(path, read_only=True, data_only=True)
+    try:
+        found, count = False, 0
+        for name, mapping in mappings.items():
+            if name not in book.sheetnames:
+                raise ValueError(f"工作表不存在：{name}")
+            _check_dimensions(book[name])
+            rows = book[name].iter_rows(values_only=True)
+            headers = _headers(next(rows, ()))
+            source_idx, _, _ = _validate_mapping(headers, mapping)
+            if found:
+                continue
+            for row in rows:
+                count += 1
+                _check_count(count)
+                if len(row) > MAX_COLUMNS:
+                    raise ValueError(f"文件列数不可超过 {MAX_COLUMNS} 列")
+                if _display(row[source_idx] if source_idx < len(row) else None).strip():
+                    found = True
+                    break
+        return found
+    finally:
+        book.close()
+
+
 def read_mapped_rows(path, mappings):
     """Return {sheet: [(row index, source, context)]}, omitting blank sources."""
     path = Path(path)

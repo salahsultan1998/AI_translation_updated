@@ -1,8 +1,8 @@
 {
   "model_options": [
+    "openai/gpt-6-luna-pro",
     "qwen/qwen3.6-flash",
-    "google/gemini-3.7-flash",
-    "openai/gpt-6-luna-pro"
+    "google/gemini-3.7-flash"
   ],
-  "default_model": "qwen/qwen3.6-flash"
+  "default_model": "openai/gpt-6-luna-pro"
 }

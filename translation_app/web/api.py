@@ -16,7 +16,7 @@ from flask import Blueprint, current_app, g, jsonify, request, send_file, url_fo
 from werkzeug.utils import secure_filename
 
 from translation_app.services.projects import get_project, validate_selection
-from translation_app.services.spreadsheets import inspect_file, read_mapped_rows
+from translation_app.services.spreadsheets import has_mapped_rows, inspect_file
 
 api = Blueprint('api', __name__, url_prefix='/api')
 
@@ -45,7 +45,8 @@ def owner():
 
 def engine():
     from translation_app.services.database import ProjectDatabase
-    return ProjectDatabase(g.user['access_token'], allow_anonymous=not current_app.config['AUTH_ENABLED'])
+    return ProjectDatabase(g.user['access_token'], allow_anonymous=not current_app.config['AUTH_ENABLED'],
+                           storage_root=current_app.config['STORAGE_ROOT'])
 
 
 def scoped_project(project_id, language=None):
@@ -132,7 +133,7 @@ def create_job():
     model = data.get('model') or default
     if model not in options:
         raise ValueError('模型配置无效')
-    size = data.get('batch_size', 10)
+    size = data.get('batch_size', 30)
     if type(size) is not int or not 1 <= size <= 50:
         raise ValueError('每批行数必须在 1 到 50 之间')
     instructions = data.get('custom_instructions', '')
@@ -171,13 +172,13 @@ def create_job():
             if not isinstance(sheet, dict) or not isinstance(sheet.get('name'), str) or sheet['name'] in mappings:
                 raise ValueError('工作表映射无效')
             mappings[sheet['name']] = {k: sheet.get(k) for k in ('source', 'context', 'target')}
-        rows = read_mapped_rows(path, mappings)
-        if not any(rows.values()):
+        # Preview fully checked this private upload; avoid materializing it again.
+        if not has_mapped_rows(path, mappings):
             raise ValueError('未找到需要翻译的文本')
     if len(raw) > current_app.config['MAX_CONTENT_LENGTH']:
         raise ValueError('输入内容过大')
     settings = {'model': model, 'batch_size': size, 'use_smart_budget': bool(data.get('use_smart_budget', True)),
-                'custom_instructions': instructions}
+                'custom_instructions': instructions, 'use_exact_memory': data.get('use_exact_memory') is True}
     from translation_app.services.projects import compose_prompt
     settings['system_prompt'] = compose_prompt(project_id, language)
     if not project['direct']:
@@ -227,6 +228,16 @@ def job_status(job_id):
         return jsonify(error='任务不存在'), 404
     job['download_url'] = url_for('api.job_download', job_id=job_id) if job['status'] == 'completed' else None
     return jsonify(job)
+
+
+@api.post('/jobs/<job_id>/retry')
+def retry_job(job_id):
+    store = current_app.extensions['jobs']
+    job = store.get(owner(), job_id)
+    if not job:
+        return jsonify(error='任务不存在'), 404
+    validate_selection(job['project_id'], job['language'])
+    return jsonify(store.retry(owner(), job_id, g.user['access_token'])), 202
 
 
 @api.get('/jobs/<job_id>/download')

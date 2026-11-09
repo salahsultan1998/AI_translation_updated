@@ -208,7 +208,7 @@
   }
   $('preview-file').addEventListener('click', async () => { clearMessages(); try { state.upload = await previewUpload($('file')); showSheets(state.upload); } catch (e) { showError(e.message); } });
   function jobPayload() {
-    const payload = { project_id: projectId, language: $('language').value, model: $('model').value, batch_size: Number($('batch-size').value), use_smart_budget: $('batch-mode').value === 'auto', custom_instructions: $('instructions').value };
+    const payload = { project_id: projectId, language: $('language').value, model: $('model').value, batch_size: Number($('batch-size').value), use_smart_budget: $('batch-mode').value === 'auto', custom_instructions: $('instructions').value, use_exact_memory: $('exact-memory').checked };
     if (state.input === 'manual') {
       state.submitted = manualRows().map(row => ({ id: row.dataset.rowId, source_text: row.querySelector('.manual-source').value, context: row.querySelector('.manual-context').value, target: row.querySelector('.manual-translation').value }));
       payload.manual_rows = state.submitted.map(({source_text, context, target}) => ({source_text, context, translated_text: target}));
@@ -234,8 +234,11 @@
       ? '后台处理服务未运行，任务正在等待。请启动后台处理服务。'
       : '后台处理服务可能已停止，正在确认任务状态。请检查后台处理服务。';
     const completed = Number(job.completed || 0), total = Number(job.total || 0);
-    $('job-count').textContent = total ? `${completed} / ${total}` : '';
-    $('job-progress').value = total ? Math.min(100, completed / total * 100) : (['complete','completed'].includes(job.status) ? 100 : 0);
+    $('job-count').textContent = total ? `${completed} / ${total} 行` : '';
+    $('job-progress').value = ['complete', 'completed'].includes(job.status) ? 100 : (total ? Math.min(99, completed / total * 100) : 0);
+    state.retryJob = job.can_retry ? job.id : null;
+    $('retry-job').hidden = !state.retryJob;
+    $('retry-note').hidden = !state.retryJob;
     const download = $('download'); download.hidden = !job.download_url;
     download.textContent = job.input_mode === 'manual' ? '下载原始翻译文件（不含表格修改） ↓' : '下载翻译文件 ↓';
     if (job.download_url) download.href = job.download_url;
@@ -297,6 +300,15 @@
   }
   $('start-job').addEventListener('click', async () => {
     clearMessages(); try { const payload = jobPayload(); $('start-job').disabled = true; const job = await request('/api/jobs', {method:'POST',body:payload}); state.submittedJob = payload.manual_rows ? job.id : null; $('result-panel').hidden = true; presentJob(job); if (state.timer) clearTimeout(state.timer); poll(job.id); } catch (e) { $('start-job').disabled = false; showError(e.message); }
+  });
+  $('retry-job').addEventListener('click', async () => {
+    if (!state.retryJob) return;
+    clearMessages(); $('retry-job').disabled = true; $('start-job').disabled = true;
+    try {
+      const job = await request(`/api/jobs/${encodeURIComponent(state.retryJob)}/retry`, {method: 'POST'});
+      presentJob(job); if (state.timer) clearTimeout(state.timer); poll(job.id);
+    } catch (e) { $('start-job').disabled = false; showError(e.message); }
+    finally { $('retry-job').disabled = false; }
   });
   async function clearPreviousJobs() {
     $('start-job').disabled = true;

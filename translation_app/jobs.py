@@ -22,6 +22,8 @@ from typing import Any, Callable
 LOG = logging.getLogger(__name__)
 WORKER_HEARTBEAT_INTERVAL = 5
 WORKER_HEARTBEAT_TTL = 20
+STAGE_MESSAGES = {'reading': '正在读取文件', 'resources': '正在加载项目知识库',
+                  'planning': '正在准备翻译批次', 'translating': '正在翻译', 'writing': '正在生成结果文件'}
 
 
 class JobStore:
@@ -46,6 +48,11 @@ class JobStore:
             db.execute("CREATE INDEX IF NOT EXISTS jobs_queue ON jobs(status, created_at)")
             db.execute("CREATE INDEX IF NOT EXISTS jobs_owner ON jobs(owner_id, created_at)")
             db.execute("CREATE TABLE IF NOT EXISTS workers (id TEXT PRIMARY KEY, heartbeat_at REAL NOT NULL)")
+            db.execute('BEGIN IMMEDIATE')
+            columns = {row['name'] for row in db.execute('PRAGMA table_info(jobs)')}
+            for name in ('queued_at', 'started_at', 'queue_seconds'):
+                if name not in columns:
+                    db.execute(f'ALTER TABLE jobs ADD COLUMN {name} REAL')
         try:
             os.chmod(self.database, 0o600)
         except OSError:
@@ -73,7 +80,7 @@ class JobStore:
         # Surface a dead worker's expired lease even if no replacement worker
         # has arrived to perform the durable interruption update in claim().
         if status == 'running' and row['lease_until'] is not None and row['lease_until'] < time.time():
-            status, message = 'interrupted', '处理已中断，请重新提交。'
+            status, message = 'interrupted', '处理已中断，可继续未完成的翻译。'
         mapping = json.loads(row['mappings']).get('CSV_Sheet', {})
         input_mode = 'manual' if isinstance(mapping, dict) and mapping.get('_manual_entry') is True else 'file'
         return {"id": row["id"], "project_id": row["project_id"],
@@ -83,6 +90,8 @@ class JobStore:
                 "total": row["total"], "message": message,
                 "worker_online": worker_available,
                 "summary": json.loads(row["summary"]) if row["summary"] else None,
+                "started_at": row['started_at'], "queue_seconds": row['queue_seconds'],
+                "can_retry": status in {'failed', 'interrupted'},
                 "created_at": row["created_at"], "updated_at": row["updated_at"]}
 
     def touch_worker(self, worker_id: str) -> None:
@@ -124,6 +133,11 @@ class JobStore:
             with input_path.open("xb") as fh:
                 os.chmod(input_path, 0o600)
                 fh.write(file_bytes)
+            retry_settings = {key: settings[key] for key in ('model', 'batch_size', 'use_smart_budget',
+                              'custom_instructions', 'system_prompt', 'use_exact_memory') if key in settings}
+            with (folder / 'retry.json').open('x', encoding='utf-8') as fh:
+                os.chmod(fh.name, 0o600)
+                json.dump(retry_settings, fh, ensure_ascii=False)
             with self._connect() as db:
                 db.execute("""INSERT INTO jobs
                     (id, owner_id, project_id, language, filename, extension, mappings,
@@ -134,6 +148,36 @@ class JobStore:
         except Exception:
             shutil.rmtree(folder, ignore_errors=True)
             raise
+        return self.get(owner_id, job_id)
+
+    def retry(self, owner_id: str, job_id: str, access_token=None) -> dict | None:
+        """Explicitly resume one failed job; validated checkpoints remain private."""
+        folder = self._directory(job_id)
+        now = time.time()
+        with self._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT * FROM jobs WHERE id=? AND owner_id=?', (job_id, owner_id)).fetchone()
+            if not row:
+                return None
+            expired = row['status'] == 'running' and row['lease_until'] is not None and row['lease_until'] < now
+            if row['status'] not in {'failed', 'interrupted'} and not expired:
+                raise ValueError('只有失败或中断的任务可以继续')
+            active = db.execute("SELECT count(*) FROM jobs WHERE owner_id=? AND id<>? "
+                                "AND (status='queued' OR (status='running' AND lease_until>=?))",
+                                (owner_id, job_id, now)).fetchone()[0]
+            if active >= 3:
+                raise ValueError('同时最多提交三个任务，请等待已有任务完成')
+            try:
+                settings = json.loads((folder / 'retry.json').read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                raise ValueError('此任务无法继续，请重新提交') from None
+            if not (folder / ('input' + row['extension'])).is_file():
+                raise ValueError('输入文件不存在，请重新提交')
+            if row['project_id'] != 'direct':
+                settings['access_token'] = access_token
+            db.execute("UPDATE jobs SET status='queued', settings=?, message=?, worker_id=NULL, lease_until=NULL, "
+                       'summary=NULL, queued_at=?, started_at=NULL, queue_seconds=NULL, updated_at=? WHERE id=?',
+                       (json.dumps(settings, ensure_ascii=False), '等待继续处理', now, now, job_id))
         return self.get(owner_id, job_id)
 
     def get(self, owner_id: str, job_id: str) -> dict | None:
@@ -196,13 +240,14 @@ class JobStore:
             db.execute("""UPDATE jobs SET status='interrupted', message=?, worker_id=NULL,
                        lease_until=NULL, settings='{}', updated_at=?
                        WHERE status='running' AND lease_until < ?""",
-                       ("处理已中断，请重新提交。", now, now))
+                       ("处理已中断，可继续未完成的翻译。", now, now))
             row = db.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at, id LIMIT 1").fetchone()
             if row is None:
                 return None
             db.execute("""UPDATE jobs SET status='running', worker_id=?, lease_until=?,
-                       updated_at=?, message=? WHERE id=? AND status='queued'""",
-                       (worker_id, now + lease_seconds, now, "正在翻译", row["id"]))
+                       updated_at=?, message=?, started_at=?, queue_seconds=? WHERE id=? AND status='queued'""",
+                       (worker_id, now + lease_seconds, now, "正在读取文件", now,
+                        max(0, now - (row['queued_at'] or row['created_at'])), row["id"]))
         job = dict(row)
         job["mappings"] = json.loads(job["mappings"])
         job["settings"] = json.loads(job["settings"])
@@ -228,6 +273,14 @@ class JobStore:
             result = db.execute("""UPDATE jobs SET completed=?, total=?, updated_at=?
                 WHERE id=? AND worker_id=? AND status='running' AND lease_until >= ?""",
                 (completed, total, now, job_id, worker_id, now))
+            return result.rowcount == 1
+
+    def stage(self, job_id: str, worker_id: str, stage: str) -> bool:
+        now = time.time()
+        with self._connect() as db:
+            result = db.execute("UPDATE jobs SET message=?, updated_at=? WHERE id=? AND worker_id=? "
+                                "AND status='running' AND lease_until>=?",
+                                (STAGE_MESSAGES[stage], now, job_id, worker_id, now))
             return result.rowcount == 1
 
     def complete(self, job_id: str, worker_id: str, summary: dict) -> bool:
@@ -260,11 +313,13 @@ def process_one(store: JobStore, translator: Callable | None = None, *,
     if not job:
         return False
     stopped = threading.Event()
+    cancelled = threading.Event()
 
     def keep_alive():
         while not stopped.wait(max(0.1, lease_seconds / 3)):
             try:
                 if not store.heartbeat(job["id"], worker_id, lease_seconds):
+                    cancelled.set()
                     return
             except Exception:
                 LOG.exception("Job heartbeat failed: %s", job["id"])
@@ -274,7 +329,16 @@ def process_one(store: JobStore, translator: Callable | None = None, *,
     try:
         def progress(done, total):
             if not store.progress(job["id"], worker_id, done, total):
+                cancelled.set()
                 raise RuntimeError("Job lease lost")
+
+        def stage(value):
+            if not store.stage(job['id'], worker_id, value):
+                cancelled.set()
+                raise RuntimeError('Job lease lost')
+
+        job['settings'].update(_stage_callback=stage, _cancel_event=cancelled,
+                               _limiter_root=str(store.root / 'provider-slots'), _job_id=job['id'])
 
         summary = translator(job["input_path"], job["output_path"], job["project_id"],
                              job["language"], job["mappings"], job["settings"],
@@ -291,7 +355,8 @@ def process_one(store: JobStore, translator: Callable | None = None, *,
                          "翻译结果行号无效", "翻译结果缺失、重复或为空", "翻译结果缺少行",
                          "没有可翻译的源文本", "翻译服务请求失败，请稍后重试",
                          "无法连接翻译服务，请稍后重试", "翻译服务响应超时，请检查网络后重新提交",
-                         "翻译服务连接中断，请检查网络后重新提交"}
+                         "翻译服务连接中断，请检查网络后重新提交", "翻译性能配置无效", "翻译任务已停止",
+                         "翻译输入超过 Token 预算，请缩短原文、上下文或补充要求"}
         detail = str(error)
         if isinstance(error, ValueError) and detail == "登录已过期，请重新登录":
             message = "登录已过期，请重新登录后重新提交。"
