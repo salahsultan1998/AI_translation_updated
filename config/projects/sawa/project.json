@@ -3,7 +3,7 @@
   "name": "sawa",
   "database_id": "sawa",
   "enabled": true,
-  "icon": "images/sawa.png",
+  "icon": "images/sawa.webp",
   "languages": [
     "arabic",
     "turkish"

@@ -3,7 +3,7 @@
   "name": "Baloot Challenges",
   "database_id": "Baloot_Challenges",
   "enabled": true,
-  "icon": "images/challeng_baloot.png",
+  "icon": "images/challeng_baloot.webp",
   "languages": [
     "arabic"
   ],

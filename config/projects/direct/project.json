@@ -4,7 +4,7 @@
   "database_id": null,
   "enabled": true,
   "direct": true,
-  "icon": "images/direct.png",
+  "icon": "images/direct.webp",
   "languages": [
     "arabic",
     "english",
