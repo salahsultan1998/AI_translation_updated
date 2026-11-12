@@ -54,6 +54,8 @@ def create_app(test_config=None):
 
     @app.before_request
     def security():
+        if request.endpoint == 'static' and request.method in {'GET', 'HEAD'}:
+            return
         session.setdefault('csrf', secrets.token_urlsafe(32))
         if request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}:
             supplied = request.headers.get('X-CSRF-Token') or request.form.get('csrf_token', '')
@@ -78,7 +80,10 @@ def create_app(test_config=None):
     @app.after_request
     def headers(response):
         response.headers['X-Content-Type-Options'] = 'nosniff'
-        response.headers['Cache-Control'] = 'no-store'
+        if request.endpoint == 'static' and response.status_code in {200, 206, 304}:
+            response.headers['Cache-Control'] = 'public, max-age=86400'
+        else:
+            response.headers['Cache-Control'] = 'no-store'
         response.headers['Referrer-Policy'] = 'same-origin'
         response.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'"
         return response

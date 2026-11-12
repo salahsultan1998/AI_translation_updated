@@ -1,8 +1,6 @@
-"""Edit only configured prompt files, with cross-process conflict detection."""
-import fcntl
-import hashlib
-import os
-import tempfile
+"""Shared production prompts and read-only local development defaults."""
+from httpx import HTTPError
+from postgrest.exceptions import APIError
 
 from . import projects
 
@@ -11,46 +9,39 @@ class PromptConflict(Exception):
     pass
 
 
-def _paths(project_id, language):
-    _, info = projects.validate_selection(project_id, language)
-    folder = projects.CONFIG_ROOT / 'projects' / project_id
-    lang_folder = folder / 'languages' / language
-    return {'system': projects._safe_file(lang_folder, info['system_prompt']),
-            'instructions': projects._safe_file(lang_folder, info['instructions'])}
+class PromptUnavailable(RuntimeError):
+    pass
 
 
-def _entry(path):
-    data = path.read_bytes()
-    return {'content': data.decode('utf-8'), 'version': hashlib.sha256(data).hexdigest()}
+def read_prompts(project_id, language, database=None):
+    if database is None:
+        return {kind: {'content': content, 'version': None}
+                for kind, content in projects.load_prompt_pair(project_id, language).items()}
+    projects.validate_selection(project_id, language)
+    try:
+        rows = (database.client.table('prompt_configs').select('kind,content,version')
+                .eq('project_id', project_id).eq('target_language', language).execute().data)
+    except (APIError, HTTPError) as exc:
+        raise PromptUnavailable('无法从 Supabase 读取提示词，请稍后重试。') from exc
+    entries = {row['kind']: {'content': row['content'], 'version': row['version']} for row in rows}
+    if entries.keys() != {'system', 'instructions'}:
+        raise PromptUnavailable('该项目语言的 Supabase 提示词配置不完整，请联系管理员。')
+    return entries
 
 
-def read_prompts(project_id, language):
-    return {name: {**_entry(path), 'path': str(path.relative_to(projects.CONFIG_ROOT.resolve().parent))}
-            for name, path in _paths(project_id, language).items()}
-
-
-def save_prompt(project_id, language, kind, content, version):
-    paths = _paths(project_id, language)
-    if kind not in paths or not isinstance(content, str) or len(content.encode('utf-8')) > 200000:
+def save_prompt(project_id, language, kind, content, version, database):
+    projects.validate_selection(project_id, language)
+    if (kind not in ('system', 'instructions') or not isinstance(content, str)
+            or '\x00' in content or len(content.encode('utf-8')) > 200000):
         raise ValueError('提示词类型或内容无效')
-    if not isinstance(version, str) or len(version) != 64:
+    if type(version) is not int or not 1 <= version < 2**63:
         raise ValueError('提示词版本无效，请刷新后重试')
-    path = paths[kind]
-    lock_path = path.parent / ('.' + path.name + '.lock')
-    with lock_path.open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        if _entry(path)['version'] != version:
-            raise PromptConflict()
-        temp_path = None
-        try:
-            with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as temp:
-                temp_path = temp.name
-                temp.write(content.encode('utf-8'))
-                temp.flush()
-                os.fsync(temp.fileno())
-            os.chmod(temp_path, path.stat().st_mode & 0o777)
-            os.replace(temp_path, path)
-        finally:
-            if temp_path and os.path.exists(temp_path):
-                os.unlink(temp_path)
-    return _entry(path)
+    try:
+        rows = (database.client.table('prompt_configs').update({'content': content})
+                .eq('project_id', project_id).eq('target_language', language)
+                .eq('kind', kind).eq('version', version).select('content,version').execute().data)
+    except (APIError, HTTPError) as exc:
+        raise PromptUnavailable('无法将提示词保存到 Supabase，请稍后重试。') from exc
+    if not rows:
+        raise PromptConflict()
+    return rows[0]

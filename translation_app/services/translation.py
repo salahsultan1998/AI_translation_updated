@@ -348,9 +348,11 @@ def _translate_file(input_path, output_path, project_id, language, mappings, set
         raise ValueError('没有可翻译的源文本')
     performance['rows'] = len(positions)
     timings['read_seconds'] = time.perf_counter() - mark
-    pair = load_prompt_pair(project_id, language)
-    prompt = settings.get('system_prompt', pair['system'])
-    settings.setdefault('instructions', pair['instructions'])
+    if 'system_prompt' not in settings or 'instructions' not in settings:
+        pair = load_prompt_pair(project_id, language)
+        settings.setdefault('system_prompt', pair['system'])
+        settings.setdefault('instructions', pair['instructions'])
+    prompt = settings['system_prompt']
     # Provisional progress is visible even while resources are being loaded.
     if progress:
         progress(0, len(unique))

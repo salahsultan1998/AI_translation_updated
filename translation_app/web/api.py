@@ -16,6 +16,7 @@ from flask import Blueprint, current_app, g, jsonify, request, send_file, url_fo
 from werkzeug.utils import secure_filename
 
 from translation_app.services.projects import get_project, validate_selection
+from translation_app.services.prompt_editor import PromptConflict, PromptUnavailable, read_prompts, save_prompt
 from translation_app.services.spreadsheets import has_mapped_rows, inspect_file
 
 api = Blueprint('api', __name__, url_prefix='/api')
@@ -24,6 +25,12 @@ api = Blueprint('api', __name__, url_prefix='/api')
 @api.errorhandler(ValueError)
 def bad_input(error):
     return jsonify(error=str(error)), 400
+
+
+@api.errorhandler(PromptUnavailable)
+def prompt_unavailable(error):
+    current_app.logger.warning('Prompt storage unavailable: %s', type(error.__cause__).__name__)
+    return jsonify(error=str(error)), 503
 
 
 @api.errorhandler(Exception)
@@ -191,9 +198,8 @@ def create_job():
     settings = {'model': model, 'batch_size': size, 'use_smart_budget': bool(data.get('use_smart_budget', True)),
                 'use_exact_memory': data.get('use_exact_memory') is True,
                 'custom_instructions': custom_instructions}
-    from translation_app.services.projects import load_prompt_pair
-    pair = load_prompt_pair(project_id, language)
-    settings.update(system_prompt=pair['system'], instructions=pair['instructions'])
+    pair = read_prompts(project_id, language, engine() if current_app.config['AUTH_ENABLED'] else None)
+    settings.update(system_prompt=pair['system']['content'], instructions=pair['instructions']['content'])
     if not project['direct']:
         settings['access_token'] = g.user['access_token']
     store = current_app.extensions['jobs']
@@ -205,12 +211,15 @@ def create_job():
 
 @api.route('/projects/<project_id>/prompts', methods=['GET', 'POST'])
 def prompts(project_id):
-    from translation_app.services.prompt_editor import PromptConflict, read_prompts, save_prompt
+    enabled = current_app.config['AUTH_ENABLED']
     if request.method == 'GET':
-        return jsonify(prompts=read_prompts(project_id, request.args.get('language')))
+        return jsonify(prompts=read_prompts(project_id, request.args.get('language'), engine() if enabled else None),
+                       read_only=not enabled)
+    if not enabled:
+        return jsonify(error='登录后才能保存 Supabase 提示词。'), 403
     data = payload()
     try:
-        saved = save_prompt(project_id, data.get('language'), data.get('kind'), data.get('content'), data.get('version'))
+        saved = save_prompt(project_id, data.get('language'), data.get('kind'), data.get('content'), data.get('version'), engine())
     except PromptConflict:
         return jsonify(error='提示词已被其他人修改，请重新加载后再保存。'), 409
     return jsonify(prompt=saved)

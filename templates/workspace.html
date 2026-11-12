@@ -27,9 +27,19 @@
         <div id="sheet-config" class="sheet-config" hidden><div class="section-heading"><div><h3>选择工作表并配置列</h3><p class="muted small">每个工作表都可以使用不同的列。</p></div></div><div id="sheet-list"></div></div>
       </div>
       <div id="manual-input">
-        <p class="muted small">可从 Excel 复制多行并粘贴到任意单元格；三列分别为原文、上下文和译文。翻译完成后可继续编辑，修改不会自动保存，请在刷新页面前复制。</p>
-        <div class="manual-grid-wrap"><table class="manual-grid" aria-label="手动翻译表格"><thead><tr><th scope="col">行</th><th scope="col">原文</th><th scope="col">上下文（可选）</th><th scope="col">译文</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead><tbody id="manual-rows"></tbody></table></div>
-        <div class="manual-actions"><button type="button" class="secondary compact" id="add-row">＋ 添加一行</button><button type="button" class="secondary compact" id="copy-translations">复制全部译文</button><button type="button" class="secondary compact" id="copy-table">复制整表</button></div>
+        <div class="manual-actions" role="group" aria-label="表格操作">
+          <button type="button" class="secondary compact" id="add-row">添加一行</button>
+          <button type="button" class="secondary compact" id="copy-translations">复制全部译文</button>
+          <button type="button" class="secondary compact" id="copy-table">复制整表</button>
+          <button type="button" class="secondary compact" id="clear-manual">清空表格</button>
+        </div>
+        <p id="manual-help" class="muted small">单击选中后可粘贴 Excel 区域，双击或按 <kbd>F2</kbd> 可编辑单格。离开前请复制需要保留的译文。</p>
+        <div class="manual-grid-wrap">
+          <table class="manual-grid" role="grid" aria-label="手动翻译表格" aria-describedby="manual-help" aria-multiselectable="true">
+            <thead><tr><th scope="col">行</th><th scope="col">原文</th><th scope="col">上下文（可选）</th><th scope="col">译文</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead>
+            <tbody id="manual-rows"></tbody>
+          </table>
+        </div>
       </div>
       <details class="advanced"><summary>高级设置</summary><div class="fields three"><label>AI 模型<select id="model">{% for model in model_options|default([]) %}<option value="{{ model }}"{% if model == default_model %} selected{% endif %}>{{ model }}</option>{% endfor %}</select></label><label>分批方式<select id="batch-mode"><option value="auto">自动</option><option value="manual">手动</option></select></label><label id="batch-size-label" hidden>每批行数<input id="batch-size" type="number" value="10" min="1" max="50"></label></div><label>补充翻译要求（仅本次，不保存）<textarea id="instructions" rows="3" maxlength="20000" placeholder="例如：本次翻译使用更简短、轻松的语气。"></textarea></label><label class="inline-check"{% if project.direct %} hidden{% endif %}><input id="exact-memory" type="checkbox"> 直接复用完全匹配的翻译记忆（仅用于已审核译文，跳过风格调整；有上下文或补充要求的行仍交给 AI）</label></details>
       <div class="action-row"><button type="button" class="secondary" id="stop-job" hidden>停止翻译</button><button type="button" id="start-job">开始翻译</button></div>
@@ -39,7 +49,7 @@
   </div>
   <div id="config-panel" role="tabpanel" hidden>
     <section class="panel prompt-panel">
-      <div class="prompt-heading"><div><h2>提示词配置</h2><p class="muted small">仅影响 {{ project.name }} 当前语言；保存后写入仓库配置文件，全团队共用</p></div><span id="prompt-language-name" class="muted small"></span></div>
+      <div class="prompt-heading"><div><h2>提示词配置</h2><p class="muted small">{% if auth_enabled %}保存到 Supabase，仅影响 {{ project.name }} 的当前语言，全团队共用{% else %}本地提示词预览（只读）{% endif %}</p></div><span id="prompt-language-name" class="muted small"></span></div>
       <div id="prompt-message" class="notice" role="status" hidden></div>
       <div id="prompt-editors"></div>
     </section>
@@ -52,4 +62,7 @@
   {% endif %}
 </main>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='js/workspace.js') }}" defer></script>{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/manual-grid.js') }}" defer></script>
+<script src="{{ url_for('static', filename='js/workspace.js', v='supabase-prompts') }}" defer></script>
+{% endblock %}

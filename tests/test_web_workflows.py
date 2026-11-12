@@ -26,6 +26,13 @@ class WebWorkflowTests(unittest.TestCase):
         self.app = create_app({'TESTING': True, 'SECRET_KEY': 'test-secret',
                                'STORAGE_ROOT': self.temp.name, 'AUTH_PROVIDER': FakeAuth(),
                                'AUTH_ENABLED': True})
+        # Prompt storage has its own request-level tests in test_prompt_editor.
+        prompt_patch = patch('translation_app.web.api.read_prompts', return_value={
+            'system': {'content': 'Translate the text', 'version': 1},
+            'instructions': {'content': '', 'version': 1},
+        })
+        prompt_patch.start()
+        self.addCleanup(prompt_patch.stop)
         self.client = self.app.test_client()
 
     def tearDown(self):
@@ -55,6 +62,22 @@ class WebWorkflowTests(unittest.TestCase):
         self.assertNotIn('土耳其语', project)
         invalid = self.client.post('/api/jobs', json={'project_id': 's06', 'language': 'arabic'}, headers={'X-CSRF-Token': csrf})
         self.assertEqual(invalid.status_code, 400)
+
+    def test_public_static_cache_does_not_extend_to_pages_or_api(self):
+        path = '/static/css/app.css'
+        with self.client.get(path) as asset:
+            self.assertEqual(asset.status_code, 200)
+            self.assertEqual(asset.headers['Cache-Control'], 'public, max-age=86400')
+            self.assertNotIn('Set-Cookie', asset.headers)
+            etag = asset.headers['ETag']
+        with self.client.get(path, headers={'If-None-Match': etag}) as cached:
+            self.assertEqual(cached.status_code, 304)
+            self.assertEqual(cached.headers['Cache-Control'], 'public, max-age=86400')
+        with self.client.get('/static/missing.webp') as missing:
+            self.assertEqual(missing.headers['Cache-Control'], 'no-store')
+        self.login()
+        self.assertEqual(self.client.get('/direct').headers['Cache-Control'], 'no-store')
+        self.assertEqual(self.client.get('/api/jobs').headers['Cache-Control'], 'no-store')
 
     def test_upload_submit_and_owner_scope(self):
         csrf = self.login()

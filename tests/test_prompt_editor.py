@@ -2,8 +2,13 @@ import json
 from pathlib import Path
 import shutil
 import tempfile
+import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+
+import httpx
+from postgrest import SyncPostgrestClient
 
 from translation_app import create_app
 from translation_app.jobs import process_one
@@ -18,11 +23,24 @@ class PromptEditorTests(unittest.TestCase):
         shutil.copytree(projects.CONFIG_ROOT, self.config)
         self.config_patch = patch.object(projects, 'CONFIG_ROOT', self.config)
         self.config_patch.start()
-        self.app = create_app({'TESTING': True, 'AUTH_ENABLED': False, 'SECRET_KEY': 'test',
+        self.app = create_app({'TESTING': True, 'AUTH_ENABLED': True, 'SECRET_KEY': 'test',
                                'STORAGE_ROOT': Path(self.tmp.name) / 'storage'})
+        self.rows = {(project['id'], language, kind): {'content': content, 'version': 1}
+                     for project in projects.list_projects() for language in project['languages']
+                     for kind, content in projects.load_prompt_pair(project['id'], language).items()}
+        self.db_error = False
+        http = httpx.Client(transport=httpx.MockTransport(self.postgrest_request))
+        self.addCleanup(http.close)
+        db = SimpleNamespace(client=SyncPostgrestClient('https://example.invalid', http_client=http,
+                                                        retry_enabled=False))
+        engine_patch = patch('translation_app.web.api.engine', return_value=db)
+        engine_patch.start()
+        self.addCleanup(engine_patch.stop)
         self.client = self.app.test_client()
-        self.client.get('/projects')
+        self.client.get('/login')
         with self.client.session_transaction() as session:
+            session['sid'] = self.app.extensions['sessions'].create(
+                'team-user', 'team@example.invalid', 'test-token', 'refresh-token', time.time() + 3600)
             self.headers = {'X-CSRF-Token': session['csrf']}
 
     def tearDown(self):
@@ -38,7 +56,26 @@ class PromptEditorTests(unittest.TestCase):
         return self.client.post(f'/api/projects/{project}/prompts', headers=self.headers,
                                 json={'language': language, 'kind': kind, 'content': content, 'version': version})
 
-    def test_every_game_language_has_exactly_two_editable_repo_files(self):
+    def postgrest_request(self, request):
+        self.assertEqual(request.url.path, '/prompt_configs')
+        if self.db_error:
+            return httpx.Response(503, json={'code': 'PGRST000', 'message': 'Database unavailable'})
+        params = request.url.params
+        project, language = (params[name].removeprefix('eq.') for name in ('project_id', 'target_language'))
+        if request.method == 'PATCH':
+            key = (project, language, params['kind'].removeprefix('eq.'))
+            row = self.rows.get(key)
+            if not row or params['version'] != f"eq.{row['version']}":
+                return httpx.Response(200, json=[])
+            body = json.loads(request.content)
+            self.assertEqual(set(body), {'content'})
+            row.update(content=body['content'], version=row['version'] + 1)
+            return httpx.Response(200, json=[row])
+        self.assertEqual(request.method, 'GET')
+        return httpx.Response(200, json=[{'kind': kind, **row}
+                              for (p, lang, kind), row in self.rows.items() if (p, lang) == (project, language)])
+
+    def test_every_game_language_reads_two_supabase_rows(self):
         for project in projects.list_projects():
             for language in project['languages']:
                 with self.subTest(project=project['id'], language=language):
@@ -47,7 +84,7 @@ class PromptEditorTests(unittest.TestCase):
                     folder = self.config / 'projects' / project['id'] / 'languages' / language
                     for kind, filename in (('system', 'system.md'), ('instructions', 'instructions.md')):
                         self.assertEqual(prompts[kind]['content'], (folder / filename).read_text())
-                        self.assertTrue(prompts[kind]['path'].endswith('/' + filename))
+                        self.assertEqual(prompts[kind]['version'], 1)
         self.assertFalse((self.config / 'base_prompt.md').exists())
 
     def test_both_prompts_are_saved_permanently_and_isolated(self):
@@ -58,14 +95,13 @@ class PromptEditorTests(unittest.TestCase):
             response = self.save('sawa', 'arabic', kind, 'New ' + kind, entries[kind]['version'])
             self.assertEqual(response.status_code, 200)
             path = self.config / 'projects/sawa/languages/arabic' / filename
-            self.assertEqual(path.read_text(), 'New ' + kind)
-            # A fresh service read sees the file, with no browser/session state involved.
-            self.assertEqual(projects.load_prompt_pair('sawa', 'arabic')[kind], 'New ' + kind)
+            self.assertEqual(path.read_text(), originals['sawa', 'arabic'][kind])
+            self.assertEqual(response.json['prompt']['version'], entries[kind]['version'] + 1)
             self.assertEqual(self.read()[kind]['content'], 'New ' + kind)
         for key in (('sawa', 'turkish'), ('tarbi3a_baloot', 'arabic')):
-            self.assertEqual(projects.load_prompt_pair(*key), originals[key])
+            self.assertEqual({kind: row['content'] for kind, row in self.read(*key).items()}, originals[key])
 
-    def test_conflicting_team_edits_and_external_file_edits_are_detected(self):
+    def test_conflicting_team_edits_are_detected_and_repo_changes_are_ignored(self):
         entries = self.read()
         for kind in ('system', 'instructions'):
             self.assertEqual(self.save('sawa', 'arabic', kind, 'First edit', entries[kind]['version']).status_code, 200)
@@ -73,8 +109,26 @@ class PromptEditorTests(unittest.TestCase):
         latest = self.read()['system']
         path = self.config / 'projects/sawa/languages/arabic/system.md'
         path.write_text('Edited in IDE')
-        self.assertEqual(self.save('sawa', 'arabic', 'system', 'Browser edit', latest['version']).status_code, 409)
+        self.assertEqual(self.read()['system']['content'], 'First edit')
+        self.assertEqual(self.save('sawa', 'arabic', 'system', 'Browser edit', latest['version']).status_code, 200)
         self.assertEqual(path.read_text(), 'Edited in IDE')
+
+    def test_dev_defaults_are_read_only(self):
+        self.app.config['AUTH_ENABLED'] = False
+        response = self.client.get('/api/projects/sawa/prompts?language=arabic')
+        self.assertTrue(response.json['read_only'])
+        self.assertEqual(self.save('sawa', 'arabic', 'system', 'Blocked', 1).status_code, 403)
+
+    def test_missing_prompt_or_database_error_never_falls_back_in_production(self):
+        self.rows.pop(('direct', 'english', 'instructions'))
+        for self.db_error in (False, True):
+            with self.subTest(db_error=self.db_error):
+                response = self.client.get('/api/projects/direct/prompts?language=english')
+                self.assertEqual(response.status_code, 503)
+                response = self.client.post('/api/jobs', headers=self.headers, json={'project_id': 'direct',
+                    'language': 'english', 'manual_rows': [{'source_text': 'hello'}]})
+                self.assertEqual(response.status_code, 503)
+        self.assertEqual(self.client.get('/api/jobs').json['jobs'], [])
 
     def test_only_two_kinds_are_writable_and_csrf_language_are_validated(self):
         entries = self.read()
@@ -87,7 +141,8 @@ class PromptEditorTests(unittest.TestCase):
         entries = self.read()
         for kind in ('system', 'instructions'):
             self.assertEqual(self.save('sawa', 'arabic', kind, '', entries[kind]['version']).status_code, 200)
-        self.assertEqual(projects.load_prompt_pair('sawa', 'arabic'), {'system': '', 'instructions': ''})
+        self.assertEqual({kind: row['content'] for kind, row in self.read().items()},
+                         {'system': '', 'instructions': ''})
         data = _request_data([(7, 'Text {0}', 'button')], 'Custom system only', 'Arabic', 'term : مصطلح',
                              {'instructions': 'Custom instructions only'})
         self.assertEqual(data['messages'][0], {'role': 'system', 'content': 'Custom system only'})
@@ -95,8 +150,10 @@ class PromptEditorTests(unittest.TestCase):
         self.assertIn('term : مصطلح', data['messages'][1]['content'])
         self.assertNotIn('Respond only', data['messages'][0]['content'])
 
-    def test_queued_job_snapshots_both_files_and_retry_keeps_them(self):
-        before = projects.load_prompt_pair('s06', 'english')
+    def test_queued_job_snapshots_both_supabase_prompts_and_retry_keeps_them(self):
+        before = {'system': 'Saved in Supabase', 'instructions': ''}
+        for kind, content in before.items():
+            self.rows['s06', 'english', kind]['content'] = content
         response = self.client.post('/api/jobs', headers=self.headers, json={'project_id': 's06',
             'language': 'english', 'manual_rows': [{'source_text': '你好'}]})
         self.assertEqual(response.status_code, 202)
@@ -121,7 +178,8 @@ class PromptEditorTests(unittest.TestCase):
         def translator(*args):
             return translate_file(*args, provider=provider, resource_loader=lambda *_: ({}, {}, 'IGNORED DATABASE STYLE'))
 
-        process_one(store, translator)
+        with patch('translation_app.services.translation.load_prompt_pair', side_effect=AssertionError):
+            process_one(store, translator)
         self.assertEqual(store.get(claimed['owner_id'], job_id)['status'], 'completed')
         self.assertEqual(received, [(before['system'], before['instructions'], '')])
 

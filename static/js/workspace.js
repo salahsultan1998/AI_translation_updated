@@ -5,7 +5,7 @@
   const projectId = workspace.dataset.project;
   const isDirect = workspace.dataset.direct === 'true';
   const csrf = document.querySelector('meta[name="csrf-token"]').content;
-  const state = { input: 'manual', upload: null, knowledge: null, cleanPairs: [], conflicts: [], timer: null, manualChanged: false, languageChanged: false, submitted: null };
+  const state = { input: 'manual', upload: null, knowledge: null, cleanPairs: [], conflicts: [], timer: null, languageChanged: false, submitted: null };
   const node = (tag, text, className) => { const el = document.createElement(tag); if (text != null) el.textContent = text; if (className) el.className = className; return el; };
   const workerHint = node('p', '', 'muted small');
   workerHint.setAttribute('role', 'status');
@@ -79,73 +79,9 @@
     values.forEach(value => { const option = node('option', value); option.value = value; select.appendChild(option); });
   }
   function field(label, input) { const wrap = node('label', label); wrap.appendChild(input); return wrap; }
-  let nextManualId = 0;
-  const manualRows = () => [...$('manual-rows').querySelectorAll('.manual-row')];
-  const manualClasses = ['manual-source', 'manual-context', 'manual-translation'];
-  function renumberManualRows() {
-    manualRows().forEach((row, i) => { row.querySelector('.manual-number').textContent = String(i + 1); });
-  }
-  function addManualRow(source = '', context = '', translated = '', renumber = true) {
-    const row = node('tr', null, 'manual-row'); row.dataset.rowId = String(++nextManualId);
-    const number = node('th', null, 'manual-number'); number.scope = 'row'; row.appendChild(number);
-    [source, context, translated].forEach((value, index) => {
-      const cell = node('td'); const input = node('textarea'); input.rows = 2; input.value = value;
-      input.className = manualClasses[index]; input.setAttribute('aria-label', ['原文', '上下文', '译文'][index]); input.setAttribute('dir', 'auto');
-      input.addEventListener('input', () => { state.manualChanged = true; });
-      input.addEventListener('paste', event => pasteCells(event, row, index));
-      cell.appendChild(input); row.appendChild(cell);
-    });
-    const actions = node('td'); const remove = node('button', '删除', 'secondary compact'); remove.type = 'button';
-    remove.addEventListener('click', () => { row.remove(); state.manualChanged = true; if (!manualRows().length) addManualRow(); renumberManualRows(); });
-    actions.appendChild(remove); row.appendChild(actions); $('manual-rows').appendChild(row); if (renumber) renumberManualRows(); return row;
-  }
-  // Excel's text clipboard uses TSV with CSV-style quotes for embedded tabs/newlines.
-  function parseClipboard(text) {
-    const rows = []; let row = [], value = '', quoted = false, endedWithNewline = false;
-    for (let i = 0; i < text.length; i++) {
-      const ch = text[i];
-      if (quoted) {
-        if (ch === '"' && text[i + 1] === '"') { value += '"'; i++; }
-        else if (ch === '"') quoted = false;
-        else value += ch;
-      } else if (ch === '"' && value === '') { quoted = true; endedWithNewline = false; }
-      else if (ch === '\t') { row.push(value); value = ''; endedWithNewline = false; }
-      else if (ch === '\r' || ch === '\n') {
-        if (ch === '\r' && text[i + 1] === '\n') i++;
-        row.push(value); rows.push(row); row = []; value = ''; endedWithNewline = true;
-      } else { value += ch; endedWithNewline = false; }
-    }
-    if (!endedWithNewline || row.length || value) { row.push(value); rows.push(row); }
-    return rows;
-  }
-  function pasteCells(event, anchor, startColumn) {
-    const text = event.clipboardData?.getData('text/plain');
-    if (!text || (!text.includes('\t') && !text.includes('\n') && !text.includes('\r'))) return;
-    const values = parseClipboard(text);
-    if (values.length === 1 && values[0].length === 1) {
-      event.preventDefault();
-      const input = anchor.querySelector('.' + manualClasses[startColumn]);
-      input.setRangeText(values[0][0], input.selectionStart, input.selectionEnd, 'end');
-      state.manualChanged = true; return;
-    }
-    event.preventDefault();
-    const current = manualRows(); const start = current.indexOf(anchor);
-    if (start + values.length > 10000) { showError('手动输入最多支持 10000 行。'); return; }
-    let truncated = false;
-    values.forEach((cells, offset) => {
-      let row = current[start + offset];
-      if (!row) { row = addManualRow('', '', '', false); current.push(row); }
-      cells.forEach((value, col) => {
-        if (startColumn + col >= manualClasses.length) { truncated = true; return; }
-        row.querySelector('.' + manualClasses[startColumn + col]).value = value;
-      });
-    });
-    renumberManualRows(); state.manualChanged = true;
-    if (truncated) showNotice('已粘贴表格内的列，超出原文、上下文和译文的列未粘贴。');
-  }
-  function tsvCell(value) { return /[\t\r\n"]/.test(value) ? '"' + value.replace(/"/g, '""') + '"' : value; }
-  async function copyManual(columns) {
-    const text = manualRows().map(row => columns.map(cls => tsvCell(row.querySelector('.' + cls).value)).join('\t')).join('\r\n');
+  const manualGrid = window.createManualGrid($('manual-rows'), {showError, showNotice});
+  async function copyManual(translationsOnly) {
+    const text = manualGrid.tsv(translationsOnly);
     try {
       if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
       await navigator.clipboard.writeText(text);
@@ -156,7 +92,7 @@
       try { copied = document.execCommand('copy'); } catch (_) { copied = false; } finally { input.remove(); }
       if (!copied) { showError('无法自动复制，请检查浏览器剪贴板权限。'); return; }
     }
-    showNotice(columns.length === 1 ? '已复制全部译文，可粘贴到 Excel。' : '已复制整表，可粘贴到 Excel。');
+    showNotice(translationsOnly ? '已复制全部译文，可粘贴到 Excel。' : '已复制整表，可粘贴到 Excel。');
   }
   function addTermRow() {
     const row = node('div', null, 'term-row');
@@ -179,12 +115,18 @@
       for (const kind of ['system', 'instructions']) {
         const data = result.prompts[kind]; if (!data) continue;
         const section = node('div', null, 'prompt-editor');
-        const heading = node('h3', labels[kind][0]); const description = node('p', `${labels[kind][1]} · 保存到 ${data.path}`, 'muted small');
+        const heading = node('h3', labels[kind][0]); const description = node('p', labels[kind][1], 'muted small');
         const textarea = node('textarea'); textarea.value = data.content; textarea.setAttribute('aria-label', labels[kind][0]); textarea.dir = 'auto';
+        if (result.read_only) {
+          textarea.readOnly = true;
+          section.append(heading, description, textarea);
+          $('prompt-editors').appendChild(section);
+          continue;
+        }
         const actions = node('div', null, 'prompt-actions'); const status = node('span', '', 'muted small');
         const discard = node('button', '放弃修改', 'secondary compact'); discard.type = 'button'; discard.disabled = true;
         const save = node('button', '保存', 'compact'); save.type = 'button'; save.disabled = true;
-        const entry = {textarea, saved: data.content, version: data.version}; promptState.entries[kind] = entry;
+        const entry = {textarea, saved: textarea.value, version: data.version}; promptState.entries[kind] = entry;
         function update() { const dirty = textarea.value !== entry.saved; status.textContent = dirty ? '未保存' : ''; save.disabled = !dirty; discard.disabled = !dirty; }
         textarea.addEventListener('input', update);
         discard.addEventListener('click', () => { textarea.value = entry.saved; update(); });
@@ -222,9 +164,27 @@
     state.input = button.dataset.input; document.querySelectorAll('[data-input]').forEach(other => other.classList.toggle('selected', other === button));
     $('file-input').hidden = state.input !== 'file'; $('manual-input').hidden = state.input !== 'manual';
   }));
-  $('add-row').addEventListener('click', () => { addManualRow(); state.manualChanged = true; }); addManualRow();
-  $('copy-translations').addEventListener('click', () => copyManual(['manual-translation']));
-  $('copy-table').addEventListener('click', () => copyManual(manualClasses));
+  $('add-row').addEventListener('click', manualGrid.addRow);
+  $('copy-translations').addEventListener('click', () => copyManual(true));
+  $('copy-table').addEventListener('click', () => copyManual(false));
+  $('clear-manual').addEventListener('click', () => {
+    if ($('start-job').disabled) return;
+    if (manualGrid.hasContent() && !window.confirm('清空原文、上下文和译文？请先复制需要保留的内容。')) return;
+    manualGrid.clear();
+    state.submitted = null;
+    state.submittedJob = null;
+    if (state.jobInput === 'manual') {
+      state.activeJobId = null;
+      state.retryJob = null;
+      state.stopJob = null;
+      state.pollGeneration = (state.pollGeneration || 0) + 1;
+      clearTimeout(state.timer);
+      $('job-status').hidden = true;
+      $('result-panel').hidden = true;
+      $('result-sheets').replaceChildren();
+    }
+    clearMessages();
+  });
   $('batch-mode').addEventListener('change', () => { $('batch-size-label').hidden = $('batch-mode').value !== 'manual'; });
   $('file').addEventListener('change', () => { state.upload = null; $('sheet-config').hidden = true; $('upload-name').textContent = $('file').files[0]?.name || '点击选择文件'; });
   async function previewUpload(input) { if (!input.files[0]) throw new Error('请先选择文件。'); const body = new FormData(); body.append('file', input.files[0]); return request('/api/uploads/preview', { method: 'POST', body }); }
@@ -249,8 +209,8 @@
   function jobPayload() {
     const payload = { project_id: projectId, language: $('language').value, model: $('model').value, batch_size: Number($('batch-size').value), use_smart_budget: $('batch-mode').value === 'auto', custom_instructions: $('instructions').value, use_exact_memory: $('exact-memory').checked };
     if (state.input === 'manual') {
-      state.submitted = manualRows().map(row => ({ id: row.dataset.rowId, source_text: row.querySelector('.manual-source').value, context: row.querySelector('.manual-context').value, target: row.querySelector('.manual-translation').value }));
-      payload.manual_rows = state.submitted.map(({source_text, context, target}) => ({source_text, context, translated_text: target}));
+      state.submitted = manualGrid.snapshot();
+      payload.manual_rows = state.submitted.map(({source_text, context, translated_text}) => ({source_text, context, translated_text}));
       payload.manual_target = $('language').selectedOptions[0]?.textContent || '翻译';
       if (!payload.manual_rows.some(row => row.source_text.trim())) throw new Error('请至少输入一行原文。');
     } else {
@@ -262,9 +222,14 @@
     }
     return payload;
   }
+  function setJobBusy(busy) {
+    $('start-job').disabled = busy;
+    $('clear-manual').disabled = busy;
+  }
   function presentJob(job) {
+    state.jobInput = job.input_mode;
     $('job-status').hidden = false;
-    $('start-job').disabled = ['queued', 'running', 'cancelling'].includes(job.status);
+    setJobBusy(['queued', 'running', 'cancelling'].includes(job.status));
     state.stopJob = job.can_cancel ? job.id : null;
     $('stop-job').hidden = !['queued', 'running', 'cancelling'].includes(job.status);
     $('stop-job').disabled = Boolean(state.stopPending) || !state.stopJob;
@@ -300,20 +265,9 @@
       if (restoreLanguage) $('language').value = job.language;
       if (languageConflict) skipped = rows.length;
       else if (state.submittedJob === id && state.submitted) {
-        const currentById = new Map(manualRows().map(row => [row.dataset.rowId, row]));
-        rows.forEach((item, index) => {
-          const snapshot = state.submitted[index];
-          const row = snapshot && currentById.get(snapshot.id);
-          if (!row || row.querySelector('.manual-source').value !== snapshot.source_text ||
-              row.querySelector('.manual-context').value !== snapshot.context ||
-              row.querySelector('.manual-translation').value !== snapshot.target) { skipped++; return; }
-          row.querySelector('.manual-translation').value = item.translated_text;
-        });
-      } else if (!state.manualChanged && manualRows().every(row => manualClasses.every(cls => !row.querySelector('.' + cls).value))) {
-        $('manual-rows').replaceChildren();
-        rows.forEach(item => addManualRow(item.source_text, item.context, item.translated_text, false));
-        if (!rows.length) addManualRow();
-        else renumberManualRows();
+        skipped = manualGrid.applyResults(state.submitted, rows);
+      } else if (!manualGrid.changed && !manualGrid.hasContent()) {
+        manualGrid.replaceRows(rows);
         state.input = 'manual'; $('manual-input').hidden = false; $('file-input').hidden = true;
         document.querySelectorAll('[data-input]').forEach(button => button.classList.toggle('selected', button.dataset.input === 'manual'));
       } else skipped = rows.length;
@@ -340,11 +294,11 @@
     $('result-panel').hidden = !container.childElementCount;
   }
   async function poll(id, generation = state.pollGeneration) {
-    try { const job = await request(`/api/jobs/${encodeURIComponent(id)}`); if (state.activeJobId !== id || generation !== state.pollGeneration) return; presentJob(job); if (['queued','running','cancelling'].includes(job.status)) state.timer = setTimeout(() => poll(id, generation), 2000); else { $('start-job').disabled = false; if (job.status === 'completed') await loadResult(id, job, generation); } }
-    catch (e) { if (state.activeJobId !== id || generation !== state.pollGeneration) return; $('start-job').disabled = false; showError(e.message); }
+    try { const job = await request(`/api/jobs/${encodeURIComponent(id)}`); if (state.activeJobId !== id || generation !== state.pollGeneration) return; presentJob(job); if (['queued','running','cancelling'].includes(job.status)) state.timer = setTimeout(() => poll(id, generation), 2000); else if (job.status === 'completed') await loadResult(id, job, generation); }
+    catch (e) { if (state.activeJobId !== id || generation !== state.pollGeneration) return; setJobBusy(false); showError(e.message); }
   }
   $('start-job').addEventListener('click', async () => {
-    clearMessages(); try { const payload = jobPayload(); $('start-job').disabled = true; state.activeJobId = null; state.pollGeneration = (state.pollGeneration || 0) + 1; if (!isDirect) await preloadResources(payload.language); const job = await request('/api/jobs', {method:'POST',body:payload}); state.activeJobId = job.id; state.submittedJob = payload.manual_rows ? job.id : null; $('result-panel').hidden = true; presentJob(job); if (state.timer) clearTimeout(state.timer); poll(job.id); } catch (e) { $('start-job').disabled = false; showError(e.message); }
+    clearMessages(); try { const payload = jobPayload(); setJobBusy(true); state.activeJobId = null; state.pollGeneration = (state.pollGeneration || 0) + 1; if (!isDirect) await preloadResources(payload.language); const job = await request('/api/jobs', {method:'POST',body:payload}); state.activeJobId = job.id; state.submittedJob = payload.manual_rows ? job.id : null; $('result-panel').hidden = true; presentJob(job); if (state.timer) clearTimeout(state.timer); poll(job.id); } catch (e) { setJobBusy(false); showError(e.message); }
   });
   $('stop-job').addEventListener('click', async () => {
     if (!state.stopJob || state.stopPending) return;
@@ -358,20 +312,20 @@
   });
   $('retry-job').addEventListener('click', async () => {
     if (!state.retryJob) return;
-    clearMessages(); $('retry-job').disabled = true; $('start-job').disabled = true;
+    clearMessages(); $('retry-job').disabled = true; setJobBusy(true);
     state.activeJobId = null; state.pollGeneration = (state.pollGeneration || 0) + 1;
     try {
       const job = await request(`/api/jobs/${encodeURIComponent(state.retryJob)}/retry`, {method: 'POST'});
       state.activeJobId = job.id; presentJob(job); if (state.timer) clearTimeout(state.timer); poll(job.id);
-    } catch (e) { $('start-job').disabled = false; showError(e.message); }
+    } catch (e) { setJobBusy(false); showError(e.message); }
     finally { $('retry-job').disabled = false; }
   });
   async function clearPreviousJobs() {
-    $('start-job').disabled = true;
+    setJobBusy(true);
     try {
       try { sessionStorage.removeItem(`locatool-job-${projectId}`); } catch (_) { /* Storage may be disabled. */ }
       await request('/api/jobs/clear', {method:'POST', body:{project_id:projectId}});
-      $('start-job').disabled = false;
+      setJobBusy(false);
     } catch (e) { showError(e.message); }
   }
   clearPreviousJobs();
@@ -385,7 +339,7 @@
   let previousLanguageName = $('language').selectedOptions[0]?.textContent || '翻译';
   $('language').addEventListener('change', () => {
     state.languageChanged = true;
-    if (manualRows().some(row => row.querySelector('.manual-translation').value)) {
+    if (manualGrid.hasTranslations()) {
       showNotice('目标语言已更改；表格中的现有译文不会自动改变。');
     }
     const current = $('language').selectedOptions[0]?.textContent || '翻译';
