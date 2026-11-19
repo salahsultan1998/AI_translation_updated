@@ -1,5 +1,6 @@
 """Background translation engine, independent of Flask and browser state."""
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import nullcontext
 import json
 import logging
 import math
@@ -275,6 +276,30 @@ def _budget_batches(batch, index, prompt, language, settings, input_budget):
 def translate_file(input_path, output_path, project_id, language, mappings, settings, progress_callback=None,
                    *, provider=None, resource_loader=None):
     """Bounded parallel translation with validated, job-local recovery checkpoints."""
+    def write(results, options):
+        target = Path(output_path)
+        temp = target.with_name(target.stem + '.tmp' + target.suffix)
+        try:
+            write_translations(input_path, temp, mappings, results)
+            check_cancelled(options)
+            temp.replace(target)
+        finally:
+            temp.unlink(missing_ok=True)
+
+    _, summary = _translate(lambda: read_mapped_rows(input_path, mappings), project_id, language,
+                            settings, progress_callback, provider, resource_loader,
+                            output_path=output_path, mappings=mappings, write=write)
+    return summary
+
+
+def translate_rows(rows, project_id, language, settings):
+    """Translate in-memory (row_id, source, context) rows using the same pipeline as files."""
+    results, _ = _translate(lambda: {'rows': rows}, project_id, language, settings)
+    return results['rows']
+
+
+def _translate(read, project_id, language, settings, progress=None, provider=None, loader=None,
+               *, output_path=None, mappings=None, write=None):
     settings = dict(settings or {})
     settings.setdefault('_cancel_event', threading.Event())
     performance = {'timings': {}, 'records': [], 'rows': 0, 'stage': 'waiting',
@@ -283,9 +308,9 @@ def translate_file(input_path, output_path, project_id, language, mappings, sett
     started = time.perf_counter()
     succeeded = False
     try:
-        with output_lock(output_path, settings):
-            result = _translate_file(input_path, output_path, project_id, language, mappings, settings,
-                                     progress_callback, provider, resource_loader)
+        with output_lock(output_path, settings) if output_path is not None else nullcontext():
+            result = _translate_mapped(read, project_id, language, settings, progress, provider, loader,
+                                       output_path, mappings, write)
             succeeded = True
             return result
     finally:
@@ -299,7 +324,8 @@ def translate_file(input_path, output_path, project_id, language, mappings, sett
             'requests': _request_summary(performance['records'])}))
 
 
-def _translate_file(input_path, output_path, project_id, language, mappings, settings, progress, provider, loader):
+def _translate_mapped(read, project_id, language, settings, progress, provider, loader,
+                      output_path, mappings, write):
     started = time.perf_counter()
     performance = settings['_performance']
     timings, requests_metrics = performance['timings'], performance['records']
@@ -332,7 +358,7 @@ def _translate_file(input_path, output_path, project_id, language, mappings, set
     settings['_output_budget'] = provider_runtime.int_setting('TRANSLATION_OUTPUT_TOKEN_BUDGET', 4000, 256, 32000)
     stage('reading')
     mark = time.perf_counter()
-    mapped = read_mapped_rows(input_path, mappings)
+    mapped = read()
     # Global IDs avoid sheet-local row-number collisions and allow cross-sheet
     # deduplication. Context remains part of the key, as in the original engine.
     unique, positions, seen, offset = [], {}, {}, 0
@@ -362,20 +388,24 @@ def _translate_file(input_path, output_path, project_id, language, mappings, set
     timings['resources_seconds'] = time.perf_counter() - mark
     stage('planning')
     mark = time.perf_counter()
-    version = fingerprint({'version': 1, 'rows': unique, 'positions': list(positions.items()),
-                           'project': project_id, 'database': project.get('database_id'),
-                           'language': language, 'target': lang['database_name'], 'mappings': mappings,
-                           'prompt': prompt, 'model': settings.get('model') or os.getenv('OPENROUTER_MODEL', 'qwen/qwen3.6-flash'),
-                           'endpoint': os.getenv('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'),
-                           'fallback': os.getenv('OPENROUTER_FALLBACK_MODEL', ''),
-                           'reasoning': {'enabled': False},
-                           'instructions': settings['instructions'],
-                           'custom_instructions': settings.get('custom_instructions', ''),
-                           'exact_memory': bool(settings.get('use_exact_memory')),
-                           'terms': terms, 'memory': memory})
-    checkpoint = Checkpoint(output_path, version)
+    checkpoint = None
+    if output_path is not None:
+        version = fingerprint({
+            'version': 1, 'rows': unique, 'positions': list(positions.items()),
+            'project': project_id, 'database': project.get('database_id'),
+            'language': language, 'target': lang['database_name'], 'mappings': mappings,
+            'prompt': prompt, 'model': settings.get('model') or os.getenv('OPENROUTER_MODEL', 'qwen/qwen3.6-flash'),
+            'endpoint': os.getenv('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'),
+            'fallback': os.getenv('OPENROUTER_FALLBACK_MODEL', ''),
+            'reasoning': {'enabled': False},
+            'instructions': settings['instructions'],
+            'custom_instructions': settings.get('custom_instructions', ''),
+            'exact_memory': bool(settings.get('use_exact_memory')),
+            'terms': terms, 'memory': memory,
+        })
+        checkpoint = Checkpoint(output_path, version)
     try:
-        translated = checkpoint.read()
+        translated = checkpoint.read() if checkpoint else {}
         # Checkpoints are private, but still validate them before trusting data.
         valid = _check_response([row for row in unique if row[0] in translated], [
             {'row_id': row_id, 'translated_text': text} for row_id, text in translated.items()])
@@ -391,7 +421,8 @@ def _translate_file(input_path, output_path, project_id, language, mappings, set
                     except ValueError:
                         pass  # Unsafe memory is a reference only, never a fast-path result.
         if exact:
-            checkpoint.save(exact)
+            if checkpoint:
+                checkpoint.save(exact)
             translated.update(exact)
         pending_rows = [row for row in unique if row[0] not in translated]
         index = _ContextIndex(terms, memory)
@@ -463,10 +494,11 @@ def _translate_file(input_path, output_path, project_id, language, mappings, set
                     active.pop(future)
                     try:
                         output = future.result()
-                        saved_at = time.perf_counter()
-                        checkpoint.save(output)
-                        _timing(settings, 'checkpoint_save', rows=len(output),
-                                seconds=f'{time.perf_counter() - saved_at:.4f}')
+                        if checkpoint:
+                            saved_at = time.perf_counter()
+                            checkpoint.save(output)
+                            _timing(settings, 'checkpoint_save', rows=len(output),
+                                    seconds=f'{time.perf_counter() - saved_at:.4f}')
                         translated.update(output)
                         completed += len(output)
                         if error is None and progress:
@@ -487,14 +519,8 @@ def _translate_file(input_path, output_path, project_id, language, mappings, set
         results = {name: {} for name in mapped}
         for (name, row_id), representative in positions.items():
             results[name][row_id] = translated[representative]
-        target_path = Path(output_path)
-        temp = target_path.with_name(target_path.stem + '.tmp' + target_path.suffix)
-        try:
-            write_translations(input_path, temp, mappings, results)
-            check_cancelled(settings)
-            temp.replace(output_path)
-        finally:
-            temp.unlink(missing_ok=True)
+        if write:
+            write(results, settings)
         timings['write_seconds'] = time.perf_counter() - mark
         summary = {'rows': len(positions), 'batches': batch_count, 'sheets': len(mapped),
                    'unique_rows': len(unique), 'deduplicated_rows': len(positions) - len(unique),
@@ -502,9 +528,10 @@ def _translate_file(input_path, output_path, project_id, language, mappings, set
                    'timings': {key: round(value, 4) for key, value in timings.items()},
                    'duration_seconds': round(time.perf_counter() - started, 4),
                    'requests': _request_summary(requests_metrics)}
-        return summary
+        return results, summary
     finally:
-        checkpoint.close()
+        if checkpoint:
+            checkpoint.close()
 
 
 def _request_summary(records):

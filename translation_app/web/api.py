@@ -16,7 +16,8 @@ from flask import Blueprint, current_app, g, jsonify, request, send_file, url_fo
 from werkzeug.utils import secure_filename
 
 from translation_app.services.projects import get_project, validate_selection
-from translation_app.services.prompt_editor import PromptConflict, PromptUnavailable, read_prompts, save_prompt
+from translation_app.services.prompt_editor import PromptConflict, PromptUnavailable, prompt_settings, read_prompts, save_prompt
+from translation_app.services.settings import translation_settings
 from translation_app.services.spreadsheets import has_mapped_rows, inspect_file
 
 api = Blueprint('api', __name__, url_prefix='/api')
@@ -146,17 +147,7 @@ def create_job():
     data = payload()
     project_id, language = data.get('project_id'), data.get('language')
     project, _ = validate_selection(project_id, language)
-    from translation_app.services.settings import model_settings
-    options, default = model_settings()
-    model = data.get('model') or default
-    if model not in options:
-        raise ValueError('模型配置无效')
-    size = data.get('batch_size', 10)
-    if type(size) is not int or not 1 <= size <= 50:
-        raise ValueError('每批行数必须在 1 到 50 之间')
-    custom_instructions = data.get('custom_instructions', '')
-    if not isinstance(custom_instructions, str) or len(custom_instructions) > 20000:
-        raise ValueError('补充翻译要求必须为文本，且不可超过 20000 字符')
+    settings = translation_settings(data)
     if 'manual_rows' in data:
         manual = data['manual_rows']
         if not isinstance(manual, list) or not 1 <= len(manual) <= 10000:
@@ -195,11 +186,8 @@ def create_job():
             raise ValueError('未找到需要翻译的文本')
     if len(raw) > current_app.config['MAX_CONTENT_LENGTH']:
         raise ValueError('输入内容过大')
-    settings = {'model': model, 'batch_size': size, 'use_smart_budget': bool(data.get('use_smart_budget', True)),
-                'use_exact_memory': data.get('use_exact_memory') is True,
-                'custom_instructions': custom_instructions}
     pair = read_prompts(project_id, language, engine() if current_app.config['AUTH_ENABLED'] else None)
-    settings.update(system_prompt=pair['system']['content'], instructions=pair['instructions']['content'])
+    settings.update(prompt_settings(pair))
     if not project['direct']:
         settings['access_token'] = g.user['access_token']
     store = current_app.extensions['jobs']

@@ -17,3 +17,18 @@ def model_settings():
     if default not in choices:
         choices = [default, *choices]
     return choices, default
+
+
+def translation_settings(data):
+    options, default = model_settings()
+    model = data.get('model') or default
+    if model not in options:
+        raise ValueError('模型配置无效')
+    size = data.get('batch_size', 10)
+    if type(size) is not int or not 1 <= size <= 50:
+        raise ValueError('每批行数必须在 1 到 50 之间')
+    custom = data.get('custom_instructions', '')
+    if not isinstance(custom, str) or len(custom) > 20000:
+        raise ValueError('补充翻译要求必须为文本，且不可超过 20000 字符')
+    return {'model': model, 'batch_size': size, 'use_smart_budget': bool(data.get('use_smart_budget', True)),
+            'use_exact_memory': data.get('use_exact_memory') is True, 'custom_instructions': custom}

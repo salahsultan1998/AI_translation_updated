@@ -29,6 +29,10 @@ def read_prompts(project_id, language, database=None):
     return entries
 
 
+def prompt_settings(pair):
+    return {'system_prompt': pair['system']['content'], 'instructions': pair['instructions']['content']}
+
+
 def save_prompt(project_id, language, kind, content, version, database):
     projects.validate_selection(project_id, language)
     if (kind not in ('system', 'instructions') or not isinstance(content, str)

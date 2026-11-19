@@ -8,7 +8,8 @@ from dotenv import load_dotenv
 from flask import Flask, g, jsonify, redirect, request, session, url_for
 
 from .auth_config import auth_enabled
-from .web.auth import SessionStore, SupabaseAuth, auth
+from .services.supabase_auth import SupabaseAuth
+from .web.auth import SessionStore, auth
 
 ROOT = Path(__file__).resolve().parent.parent
 

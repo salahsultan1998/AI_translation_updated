@@ -66,6 +66,20 @@ Gunicorn 不会启动内置的本地 worker，生产环境仍需单独运行并�
 
 单次请求上限为 25 MiB；XLSX 解压后上限为 200 MiB。工作簿最多 100 个工作表、500 列、共 100,000 条数据行，知识库导入每次最多 10,000 行。限制旨在控制单服务器资源使用，并不代表最大文件已完成负载测试。
 
+## 开发平台翻译 API
+
+```bash
+.venv/bin/uvicorn translation_app.http_api:app --host 127.0.0.1 --port 8001
+```
+
+需要在浏览器里测试时，在启动命令前加 `LOCATOOL_API_DOCS=true`，然后打开 `http://127.0.0.1:8001/docs`。文档默认关闭。
+
+将原 API 地址的 `POST /v1/translate` 转发给此进程，调用请求和成功响应沿用旧格式。传入 `game_id`、`target_language` 和 `texts`，`texts` 包含一条或多条记录。每条可传 `id` 和 `context`，译文按原顺序返回并带回原 ID。可选项包括 `model`、`batch_size`、`use_smart_budget` 和 `custom_instructions`。知识库和校验始终启用，旧请求可继续传 `validate: true` 和 `use_rag: true`。备用模型沿用服务器的 `OPENROUTER_FALLBACK_MODEL`。
+
+沿用已有的 `LOCATOOL_API_KEY`，调用方通过 `X-API-Key` 发送。生产环境在 API 服务端配置 `LOCATOOL_API_SUPABASE_EMAIL` 和 `LOCATOOL_API_SUPABASE_PASSWORD`，使用对提示词、术语和翻译记忆有读取权限的普通 Supabase 账号。现有 Supabase 用户也可用其访问 Token 作为 Bearer 凭据。Flask、FastAPI 和 Worker 使用同一份代码、Supabase 配置和 `LOCATOOL_STORAGE`。网页保存术语会使共享缓存失效，保存提示词后新请求会直接读取新内容。
+
+接口同步等待结果，服务端最多等待 120 秒，超过时返回 HTTP 504。调用方读取超时和反向代理等待上游响应的时间应长于 120 秒，以便收到接口明确的超时响应。超时后，后台停止派发新批次，已发出的模型请求可能继续到结束。
+
 ## 翻译性能与失败恢复
 
 翻译请求显式发送 `reasoning: {"enabled": false}`，关闭模型内部推理以降低翻译延迟；重试和备用模型请求沿用此设置。请求开始日志包含 `reasoning_enabled=False`。变更此设置会使旧翻译检查点失效，避免混用不同请求配置的结果。实际耗时仍受模型与供应商响应影响。

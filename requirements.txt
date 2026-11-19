@@ -7,3 +7,5 @@ supabase>=2,<3
 pyahocorasick>=2,<3
 RapidFuzz>=3,<4
 gunicorn>=22,<24
+fastapi>=0.115,<1
+uvicorn>=0.34,<1
