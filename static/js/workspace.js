@@ -94,11 +94,6 @@
     }
     showNotice(translationsOnly ? '已复制全部译文，可粘贴到 Excel。' : '已复制整表，可粘贴到 Excel。');
   }
-  function addTermRow() {
-    const row = node('div', null, 'term-row');
-    for (const [title, cls] of [['原文', 'term-source'], ['译文', 'term-target'], ['备注（可选）', 'term-note']]) { const input = node('input'); input.className = cls; row.appendChild(field(title, input)); }
-    const remove = node('button', '删除', 'secondary compact'); remove.type = 'button'; remove.addEventListener('click', () => row.remove()); row.appendChild(remove); $('term-rows').appendChild(row);
-  }
   const promptState = { entries: {}, language: null, loading: 0 };
   function promptsDirty() { return Object.values(promptState.entries).some(entry => entry.textarea.value !== entry.saved); }
   function promptMessage(message, error = false) { const box = $('prompt-message'); box.textContent = message; box.className = error ? 'notice error' : 'notice success'; box.hidden = false; }
@@ -352,8 +347,9 @@
     knowledgeStatus.textContent = '正在加载项目知识库…';
     preloadResources($('language').value).catch(() => {});
   });
-  $('add-term').addEventListener('click', addTermRow); addTermRow();
-  function collectTerms() { return [...document.querySelectorAll('.term-row')].map(row => ({ source:row.querySelector('.term-source').value.trim(), target:row.querySelector('.term-target').value.trim(), note:row.querySelector('.term-note').value.trim() })).filter(pair => pair.source && pair.target); }
+  const termGrid = window.createManualGrid($('term-rows'), {showError, showNotice, labels: ['原文', '译文', '备注']});
+  $('add-term').addEventListener('click', termGrid.addRow);
+  function collectTerms() { return termGrid.snapshot().map(row => ({source: row.source_text.trim(), target: row.context.trim(), note: row.translated_text.trim()})).filter(pair => pair.source && pair.target); }
   async function saveTerms(pairs) { if (!pairs.length) { $('conflicts').hidden = true; showNotice('已保留所有现有术语，无需保存。'); return; } const result = await request(`/api/projects/${encodeURIComponent(projectId)}/glossary/save`, {method:'POST',body:{language:$('language').value,pairs}}); $('conflicts').hidden = true; showNotice(`已保存 ${result.count} 条术语。`); refreshKnowledge(); }
   $('check-terms').addEventListener('click', async () => { clearMessages(); try { const pairs = collectTerms(); if (!pairs.length) throw new Error('请至少填写一条完整的原文和译文。'); const result = await request(`/api/projects/${encodeURIComponent(projectId)}/glossary/check`, {method:'POST',body:{language:$('language').value,pairs}}); state.cleanPairs = result.clean_pairs || []; state.conflicts = result.conflicts || []; if (!state.conflicts.length) { await saveTerms(state.cleanPairs); return; } const list = $('conflict-list'); list.replaceChildren(); state.conflicts.forEach(conflict => { const card = node('div',null,'conflict-card'); card.append(node('strong',conflict.source),node('p',`已有：${conflict.existing_target} ${conflict.existing_note || ''}`),node('p',`新内容：${conflict.new_target} ${conflict.new_note || ''}`)); const overwrite = node('input'); overwrite.type = 'checkbox'; const label = node('label'); label.append(overwrite, node('span','用新内容覆盖')); card.appendChild(label); list.appendChild(card); }); $('conflicts').hidden = false; } catch (e) { showError(e.message); } });
   $('save-conflicts').addEventListener('click', async () => { try { const selected = [...$('conflict-list').children].flatMap((card, index) => card.querySelector('input').checked ? [{source:state.conflicts[index].source,target:state.conflicts[index].new_target,note:state.conflicts[index].new_note || ''}] : []); await saveTerms([...state.cleanPairs,...selected]); } catch (e) { showError(e.message); } });

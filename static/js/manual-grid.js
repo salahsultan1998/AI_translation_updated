@@ -1,7 +1,6 @@
 /* The manual translation worksheet. Cells display text and share one editor. */
-window.createManualGrid = function (body, {showError, showNotice}) {
+window.createManualGrid = function (body, {showError, showNotice, labels = ['原文', '上下文', '译文']}) {
   const maxRows = 10000;
-  const labels = ['原文', '上下文', '译文'];
   const editor = document.createElement('textarea');
   const undo = [];
   let nextId = 0;
