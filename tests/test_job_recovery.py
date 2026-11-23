@@ -131,7 +131,7 @@ class RetryApiTests(unittest.TestCase):
         claimed = self.store.claim('replacement')
         from translation_app.services.projects import load_prompt_pair
         self.assertEqual(claimed['settings']['instructions'], load_prompt_pair('direct', 'english')['instructions'])
-        self.assertEqual(claimed['settings']['batch_size'], 10)
+        self.assertEqual(claimed['settings']['batch_size'], 40)
         self.assertFalse(claimed['settings']['use_exact_memory'])
         self.assertEqual(self.client.post(f'/api/jobs/{job_id}/retry', headers=self.headers).status_code, 400)
         page = self.client.get('/direct').text

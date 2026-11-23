@@ -1,5 +1,6 @@
 from flask import Blueprint, abort, render_template, redirect, url_for
 from translation_app.services.projects import get_project, list_languages, list_projects
+from translation_app.services.settings import DEFAULT_BATCH_SIZE, model_settings
 
 pages = Blueprint('pages', __name__)
 
@@ -28,9 +29,9 @@ def workspace_for(project_id):
         abort(404)
     if not project.get('enabled', True):
         abort(404)
-    from translation_app.services.settings import model_settings
     models, default = model_settings()
-    return render_template('workspace.html', project=project, model_options=models, default_model=default)
+    return render_template('workspace.html', project=project, model_options=models, default_model=default,
+                           default_batch_size=DEFAULT_BATCH_SIZE)
 
 
 @pages.get('/direct')

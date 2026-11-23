@@ -241,9 +241,9 @@ class TranslationPerformanceTests(unittest.TestCase):
         with patch.dict('os.environ', {'TRANSLATION_CONCURRENCY': '1'}), \
              patch.object(_ContextIndex, 'build', track):
             result = self.translate(provider=provider)
-        self.assertEqual(result['batches'], 10)
+        self.assertEqual(result['batches'], 3)
         self.assertEqual(result['concurrency'], 1)
-        self.assertEqual(events, ['context', 'request'] * 10)
+        self.assertEqual(events, ['context', 'request'] * 3)
 
     def test_late_budget_failure_preserves_already_sent_success(self):
         self.write([('short', '', ''), ('字' * 500, '', '')])

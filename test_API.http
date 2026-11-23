@@ -1,0 +1,11 @@
+POST http://47.79.38.65:8001/v1/translate
+Content-Type: application/json
+X-API-Key: LOCATOOL_API_KEY
+
+{
+  "game_id": "tarbi3a_baloot",
+  "target_language": "Arabic",
+  "texts": [
+    {"id": "0", "source_text": "绿洲狙击游戏"}
+  ]
+}

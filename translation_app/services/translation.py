@@ -14,6 +14,7 @@ import requests
 
 from . import provider_runtime
 from .resources import load_resources as _resources
+from .settings import DEFAULT_BATCH_SIZE
 from .translation_state import Checkpoint, check_cancelled, fingerprint, output_lock
 from .projects import load_prompt_pair, validate_selection
 from .spreadsheets import read_mapped_rows, write_translations
@@ -350,7 +351,7 @@ def _translate_mapped(read, project_id, language, settings, progress, provider, 
             stage_callback(name)
 
     project, lang = validate_selection(project_id, language)
-    batch_size = settings.get('batch_size', 10)
+    batch_size = settings.get('batch_size', DEFAULT_BATCH_SIZE)
     if type(batch_size) is not int or not 1 <= batch_size <= 50:
         raise ValueError('每批行数必须在 1 到 50 之间')
     concurrency = provider_runtime.int_setting('TRANSLATION_CONCURRENCY', 50, 1, 128)

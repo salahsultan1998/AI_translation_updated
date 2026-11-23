@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_BATCH_SIZE = 40
 
 
 def model_settings():
@@ -24,7 +25,7 @@ def translation_settings(data):
     model = data.get('model') or default
     if model not in options:
         raise ValueError('模型配置无效')
-    size = data.get('batch_size', 10)
+    size = data.get('batch_size', DEFAULT_BATCH_SIZE)
     if type(size) is not int or not 1 <= size <= 50:
         raise ValueError('每批行数必须在 1 到 50 之间')
     custom = data.get('custom_instructions', '')

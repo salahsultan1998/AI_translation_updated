@@ -18,7 +18,7 @@ from .services import translation
 from .services.database import ProjectDatabase
 from .services.projects import list_languages, list_projects
 from .services.prompt_editor import PromptUnavailable, prompt_settings, read_prompts
-from .services.settings import translation_settings
+from .services.settings import DEFAULT_BATCH_SIZE, translation_settings
 from .services.supabase_auth import SupabaseAuth
 from .services.translation_state import check_cancelled
 
@@ -42,7 +42,7 @@ class TranslateRequest(BaseModel):
     target_language: str
     texts: list[TextRow] = Field(min_length=1)
     model: str | None = None
-    batch_size: int = Field(default=10, ge=1, le=50)
+    batch_size: int = Field(default=DEFAULT_BATCH_SIZE, ge=1, le=50)
     use_smart_budget: bool = True
     custom_instructions: str = Field(default='', max_length=20000)
     validation_enabled: Literal[True] = Field(default=True, alias='validate')
