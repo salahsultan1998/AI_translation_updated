@@ -49,4 +49,10 @@ label{display:grid;gap:8px;font-size:13px;font-weight:500}input:not([type=file])
 
 .inline-check{display:flex;align-items:flex-start;gap:8px;margin-top:16px}.inline-check input{flex:none;margin-top:2px}
 
+/* Keep long form text scrollable without letting resize dominate the workspace. */
+textarea:not(.manual-cell-editor) {
+  max-height:clamp(180px, calc(100dvh - 160px), 400px);
+  overflow:auto;
+}
+
 #stop-job{margin-right:12px}

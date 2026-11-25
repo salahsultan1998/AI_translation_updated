@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ project.name }} · AI 本地化工作台{% endblock %}
-{% block styles %}{% if not project.direct %}<link rel="stylesheet" href="{{ url_for('static', filename='css/knowledge.css', v='knowledge-1') }}">{% endif %}{% endblock %}
+{% block styles %}{% if not project.direct %}<link rel="stylesheet" href="{{ url_for('static', filename='css/knowledge.css', v='knowledge-4') }}">{% endif %}{% endblock %}
 {% block content %}
 <div class="topline"><a class="back-link" href="/projects">← 返回项目</a>{% if auth_enabled %}<form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" class="text-button">退出登录</button></form>{% endif %}</div>
 <header class="workspace-heading">
