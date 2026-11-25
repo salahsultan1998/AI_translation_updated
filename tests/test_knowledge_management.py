@@ -81,6 +81,24 @@ class KnowledgeManagementTests(unittest.TestCase):
         self.assertEqual([row['id'] for row in result.json['rows']], ['a', 'b'])
         self.assertEqual([call.args for call in page.gt.call_args_list], [('id', 'a'), ('id', 'b')])
 
+    def test_history_snapshot_is_project_scoped_and_includes_inactive_rows_and_keys(self):
+        url = PREFIX + 'memory/snapshot?language=arabic'
+        self.members.execute.return_value.data = []
+        self.assertEqual(self.client.get(url).status_code, 403)
+        self.members.execute.return_value.data = [{'can_edit': False}]
+        table = self.db.client.table.return_value
+        scoped = table.select.return_value.eq.return_value.eq.return_value
+        page = scoped.eq.return_value.order.return_value.limit.return_value
+        item = {'id': 'a', 'status': 'archived', 'string_key': 'inventory.favorite'}
+        page.execute.return_value.data = [item]
+        page.gt.return_value.execute.return_value.data = []
+        result = self.client.get(url)
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertFalse(result.json['editable'])
+        self.assertEqual(result.json['rows'], [item])
+        scoped.eq.assert_called_with('kind', 'memory')
+        self.assertEqual(self.client.get(PREFIX + 'memory/snapshot?language=english').status_code, 400)
+
     def test_create_edit_and_bulk_operations_use_scope_and_versions(self):
         entry = {'source': ' 收藏 ', 'target': 'المفضلة', 'scene': '背包', 'note': '标题', 'string_key': 'inventory.favorite'}
         with patch('translation_app.services.knowledge.invalidate_resources') as invalidate:

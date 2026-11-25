@@ -21,12 +21,10 @@
     const tabs = [...panel.querySelectorAll('[data-kind]')];
     const form = $('form');
     const selected = new Map();
-    const lists = new Map();
-    const listTtl = 30_000;
-    let glossary;
+    const snapshots = new Map();
     const state = { kind: 'terms', language: language.value, page: 1, pages: 1, rows: [],
       editable: false, loading: false, sequence: 0, writing: false, reading: false };
-    let timer, noticeTimer, editing, importFile, plan, importMode, importSequence = 0;
+    let noticeTimer, editing, importFile, plan, importMode, importSequence = 0;
     const path = (part = '') => `/api/projects/${encodeURIComponent(projectId)}/knowledge/${state.kind}/${part}`;
     const params = () => new URLSearchParams({
       language: state.language, q: $('search').value, scene: $('scenes').value, status: $('filter').value
@@ -120,60 +118,40 @@
       syncSelection();
     }
 
-    function requestList(url) {
-      const cached = lists.get(url);
-      lists.delete(url);
-      if (cached && cached.expires > Date.now()) {
-        lists.set(url, cached);
-        return cached.promise;
-      }
-      const entry = { expires: Infinity };
-      entry.promise = request(url).then(result => {
-        entry.expires = Date.now() + listTtl;
-        return result;
-      }).catch(error => {
-        if (lists.get(url) === entry) lists.delete(url);
-        throw error;
-      });
-      lists.set(url, entry);
-      if (lists.size > 24) lists.delete(lists.keys().next().value);
-      return entry.promise;
-    }
-
-    function glossarySnapshot() {
-      if (glossary) return glossary;
-      const url = `/api/projects/${encodeURIComponent(projectId)}/knowledge/terms/snapshot`;
+    function knowledgeSnapshot(kind) {
+      if (snapshots.has(kind)) return snapshots.get(kind);
+      const url = `/api/projects/${encodeURIComponent(projectId)}/knowledge/${kind}/snapshot`;
       const pending = request(url + '?' + new URLSearchParams({ language: state.language })).then(result => {
         result.rows.sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at) || a.id.localeCompare(b.id));
         result.scenes = [...new Set(result.rows.map(row => row.scene).filter(Boolean))].sort();
         return result;
       }).catch(error => {
-        if (glossary === pending) glossary = undefined;
+        if (snapshots.get(kind) === pending) snapshots.delete(kind);
         throw error;
       });
-      glossary = pending;
+      snapshots.set(kind, pending);
       return pending;
     }
 
     function prefetchGlossary() {
-      glossarySnapshot().catch(() => {});
+      knowledgeSnapshot('terms').catch(() => {});
     }
 
-    async function glossaryPage(search) {
-      const snapshot = await glossarySnapshot();
+    async function snapshotPage(kind, search) {
+      const snapshot = await knowledgeSnapshot(kind);
       const status = search.get('status');
       const scene = search.get('scene');
       const query = (search.get('q') || '').trim().toLowerCase();
       const matching = snapshot.rows.filter(row =>
         (status === 'current' ? row.status !== 'archived' : row.status === status) &&
         (!scene || row.scene === scene) &&
-        (!query || row.source.toLowerCase().includes(query) || row.target.toLowerCase().includes(query)));
+        (!query || row.source.toLowerCase().includes(query) || row.target.toLowerCase().includes(query) ||
+          (kind === 'memory' && row.string_key.toLowerCase().includes(query))));
       const start = (Number(search.get('page')) - 1) * snapshot.page_size;
       return { ...snapshot, rows: matching.slice(start, start + snapshot.page_size), total: matching.length };
     }
 
     async function load() {
-      clearTimeout(timer);
       const sequence = ++state.sequence;
       state.loading = true;
       $('retry').hidden = true;
@@ -184,9 +162,7 @@
       const search = params();
       search.set('page', state.page);
       try {
-        const result = state.kind === 'terms'
-          ? await glossaryPage(search)
-          : await requestList(path('entries') + '?' + search);
+        const result = await snapshotPage(state.kind, search);
         if (sequence !== state.sequence) return;
         state.pages = Math.max(1, Math.ceil(result.total / result.page_size));
         if (state.page > state.pages) {
@@ -244,7 +220,7 @@
     }
 
     function setScope(kind) {
-      if (state.language !== language.value) glossary = undefined;
+      if (state.language !== language.value) snapshots.clear();
       state.kind = kind;
       state.language = language.value;
       state.editable = false;
@@ -298,7 +274,7 @@
       if (state.writing || state.loading || !state.editable) return;
       const scope = path();
       const activeLanguage = state.language;
-      const affectsGlossary = state.kind === 'terms';
+      const kind = state.kind;
       const inScope = () => scope === path() && activeLanguage === state.language;
       state.writing = true;
       syncSelection();
@@ -308,8 +284,7 @@
       if (dialog) dialogMessage(dialog);
       try {
         const result = await request(path(part), { method, body: { language: activeLanguage, ...body } });
-        lists.clear();
-        if (affectsGlossary && activeLanguage === state.language) glossary = undefined;
+        if (activeLanguage === state.language) snapshots.delete(kind);
         if (result.count) changed();
         if (!inScope()) return;
         if (dialog) dialog.close();
@@ -317,8 +292,7 @@
         message(success(result));
         await load();
       } catch (error) {
-        lists.clear();
-        if (affectsGlossary && activeLanguage === state.language) glossary = undefined;
+        if (activeLanguage === state.language) snapshots.delete(kind);
         if (!inScope()) return;
         if (error.status === 409 || error.status === 403) {
           selected.clear();
@@ -492,13 +466,11 @@
     }
     $('search').addEventListener('input', () => {
       resetFilters();
-      clearTimeout(timer);
-      timer = setTimeout(load, 180);
+      load();
     });
     for (const id of ['scenes', 'filter']) $(id).addEventListener('change', () => { resetFilters(); load(); });
     $('retry').addEventListener('click', () => {
-      if (state.kind === 'terms') glossary = undefined;
-      else lists.clear();
+      snapshots.delete(state.kind);
       message();
       load();
     });
@@ -574,7 +546,7 @@
     });
     importDialog.addEventListener('close', resetPreview);
 
-    window.addEventListener('pagehide', () => { glossary = undefined; state.sequence++; });
+    window.addEventListener('pagehide', () => { snapshots.clear(); state.sequence++; });
     window.addEventListener('pageshow', event => {
       if (!event.persisted) return;
       prefetchGlossary();
@@ -591,10 +563,7 @@
         }
       },
       languageChanged() {
-        if (state.language !== language.value) {
-          clearTimeout(timer);
-          setScope(state.kind);
-        }
+        if (state.language !== language.value) setScope(state.kind);
       }
     };
   };

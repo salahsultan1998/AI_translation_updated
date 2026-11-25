@@ -332,9 +332,9 @@ def knowledge_entries(project_id, kind):
     return jsonify(**store.listing(*filters, (int(page) - 1) * PAGE_SIZE), editable=editable, page_size=PAGE_SIZE)
 
 
-@api.get('/projects/<project_id>/knowledge/terms/snapshot')
-def glossary_snapshot(project_id):
-    store = knowledge_store(project_id, 'terms', request.args.get('language'))
+@api.get('/projects/<project_id>/knowledge/<kind>/snapshot')
+def knowledge_snapshot(project_id, kind):
+    store = knowledge_store(project_id, kind, request.args.get('language'))
     editable = store.require_access()
     return jsonify(rows=store.snapshot_rows(), editable=editable, page_size=PAGE_SIZE)
 
