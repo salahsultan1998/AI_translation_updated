@@ -332,6 +332,13 @@ def knowledge_entries(project_id, kind):
     return jsonify(**store.listing(*filters, (int(page) - 1) * PAGE_SIZE), editable=editable, page_size=PAGE_SIZE)
 
 
+@api.get('/projects/<project_id>/knowledge/terms/snapshot')
+def glossary_snapshot(project_id):
+    store = knowledge_store(project_id, 'terms', request.args.get('language'))
+    editable = store.require_access()
+    return jsonify(rows=store.glossary_rows(), editable=editable, page_size=PAGE_SIZE)
+
+
 @api.get('/projects/<project_id>/knowledge/<kind>/export')
 def knowledge_export(project_id, kind):
     from openpyxl import Workbook

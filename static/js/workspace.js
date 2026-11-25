@@ -351,6 +351,7 @@
     previousLanguageName = current;
   });
   if (isDirect) return;
+  library.prefetchGlossary();
   preloadResources($('language').value).catch(() => {});
   $('language').addEventListener('change', () => {
     knowledgeStatus.textContent = '正在加载项目知识库…';

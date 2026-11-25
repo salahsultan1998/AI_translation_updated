@@ -111,6 +111,20 @@ class KnowledgeStore:
         return self._rpc('knowledge_list', p_query=query, p_scene=scene, p_status=status,
                          p_offset=offset, p_limit=limit)
 
+    def glossary_rows(self):
+        rows = []
+        while True:
+            query = (self.db.client.table('knowledge_entries')
+                     .select('id,source,target,scene,string_key,note,status,origin,verified,version,updated_at')
+                     .eq('game_id', self.game).eq('target_language', self.scope['p_language'])
+                     .eq('kind', 'terms').order('id').limit(1000))
+            if rows:
+                query = query.gt('id', rows[-1]['id'])
+            batch = query.execute().data or []
+            if not batch:
+                return rows
+            rows.extend(batch)
+
     def mutate(self, change, *, rows=(), refs=(), status='active', origin='manual'):
         try:
             count = self._rpc('knowledge_mutate', p_action=change, p_rows=list(rows), p_refs=list(refs),

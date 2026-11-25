@@ -21,6 +21,9 @@
     const tabs = [...panel.querySelectorAll('[data-kind]')];
     const form = $('form');
     const selected = new Map();
+    const lists = new Map();
+    const listTtl = 30_000;
+    let glossary;
     const state = { kind: 'terms', language: language.value, page: 1, pages: 1, rows: [],
       editable: false, loading: false, sequence: 0, writing: false, reading: false };
     let timer, noticeTimer, editing, importFile, plan, importMode, importSequence = 0;
@@ -117,6 +120,58 @@
       syncSelection();
     }
 
+    function requestList(url) {
+      const cached = lists.get(url);
+      lists.delete(url);
+      if (cached && cached.expires > Date.now()) {
+        lists.set(url, cached);
+        return cached.promise;
+      }
+      const entry = { expires: Infinity };
+      entry.promise = request(url).then(result => {
+        entry.expires = Date.now() + listTtl;
+        return result;
+      }).catch(error => {
+        if (lists.get(url) === entry) lists.delete(url);
+        throw error;
+      });
+      lists.set(url, entry);
+      if (lists.size > 24) lists.delete(lists.keys().next().value);
+      return entry.promise;
+    }
+
+    function glossarySnapshot() {
+      if (glossary) return glossary;
+      const url = `/api/projects/${encodeURIComponent(projectId)}/knowledge/terms/snapshot`;
+      const pending = request(url + '?' + new URLSearchParams({ language: state.language })).then(result => {
+        result.rows.sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at) || a.id.localeCompare(b.id));
+        result.scenes = [...new Set(result.rows.map(row => row.scene).filter(Boolean))].sort();
+        return result;
+      }).catch(error => {
+        if (glossary === pending) glossary = undefined;
+        throw error;
+      });
+      glossary = pending;
+      return pending;
+    }
+
+    function prefetchGlossary() {
+      glossarySnapshot().catch(() => {});
+    }
+
+    async function glossaryPage(search) {
+      const snapshot = await glossarySnapshot();
+      const status = search.get('status');
+      const scene = search.get('scene');
+      const query = (search.get('q') || '').trim().toLowerCase();
+      const matching = snapshot.rows.filter(row =>
+        (status === 'current' ? row.status !== 'archived' : row.status === status) &&
+        (!scene || row.scene === scene) &&
+        (!query || row.source.toLowerCase().includes(query) || row.target.toLowerCase().includes(query)));
+      const start = (Number(search.get('page')) - 1) * snapshot.page_size;
+      return { ...snapshot, rows: matching.slice(start, start + snapshot.page_size), total: matching.length };
+    }
+
     async function load() {
       clearTimeout(timer);
       const sequence = ++state.sequence;
@@ -129,7 +184,9 @@
       const search = params();
       search.set('page', state.page);
       try {
-        const result = await request(path('entries') + '?' + search);
+        const result = state.kind === 'terms'
+          ? await glossaryPage(search)
+          : await requestList(path('entries') + '?' + search);
         if (sequence !== state.sequence) return;
         state.pages = Math.max(1, Math.ceil(result.total / result.page_size));
         if (state.page > state.pages) {
@@ -152,6 +209,8 @@
         $('pages').textContent = `${state.page} / ${state.pages}`;
         $('export').href = path('export') + '?' + search;
         $('export').hidden = !result.rows.length;
+        $('retry').textContent = '刷新';
+        $('retry').hidden = false;
       } catch (error) {
         if (sequence !== state.sequence) return;
         state.loading = false;
@@ -164,6 +223,7 @@
         $('count').textContent = '';
         $('pages').textContent = '1 / 1';
         state.page = state.pages = 1;
+        $('retry').textContent = '重新加载';
         $('retry').hidden = false;
         renderRows();
         message(error.message, true);
@@ -184,6 +244,7 @@
     }
 
     function setScope(kind) {
+      if (state.language !== language.value) glossary = undefined;
       state.kind = kind;
       state.language = language.value;
       state.editable = false;
@@ -207,6 +268,7 @@
       $('new').textContent = '新增' + info.item;
       message();
       resetFilters();
+      prefetchGlossary();
       if (!panel.hidden) load();
     }
 
@@ -236,6 +298,7 @@
       if (state.writing || state.loading || !state.editable) return;
       const scope = path();
       const activeLanguage = state.language;
+      const affectsGlossary = state.kind === 'terms';
       const inScope = () => scope === path() && activeLanguage === state.language;
       state.writing = true;
       syncSelection();
@@ -245,6 +308,8 @@
       if (dialog) dialogMessage(dialog);
       try {
         const result = await request(path(part), { method, body: { language: activeLanguage, ...body } });
+        lists.clear();
+        if (affectsGlossary && activeLanguage === state.language) glossary = undefined;
         if (result.count) changed();
         if (!inScope()) return;
         if (dialog) dialog.close();
@@ -252,6 +317,8 @@
         message(success(result));
         await load();
       } catch (error) {
+        lists.clear();
+        if (affectsGlossary && activeLanguage === state.language) glossary = undefined;
         if (!inScope()) return;
         if (error.status === 409 || error.status === 403) {
           selected.clear();
@@ -429,7 +496,12 @@
       timer = setTimeout(load, 180);
     });
     for (const id of ['scenes', 'filter']) $(id).addEventListener('change', () => { resetFilters(); load(); });
-    $('retry').addEventListener('click', () => { message(); load(); });
+    $('retry').addEventListener('click', () => {
+      if (state.kind === 'terms') glossary = undefined;
+      else lists.clear();
+      message();
+      load();
+    });
     $('prev').addEventListener('click', () => { state.page--; load(); });
     $('next').addEventListener('click', () => { state.page++; load(); });
     $('select-page').addEventListener('change', event => toggleRows(state.rows, event.target.checked));
@@ -502,7 +574,15 @@
     });
     importDialog.addEventListener('close', resetPreview);
 
+    window.addEventListener('pagehide', () => { glossary = undefined; state.sequence++; });
+    window.addEventListener('pageshow', event => {
+      if (!event.persisted) return;
+      prefetchGlossary();
+      if (!panel.hidden) load();
+    });
+
     return {
+      prefetchGlossary,
       open() {
         if (state.language !== language.value) setScope(state.kind);
         else {

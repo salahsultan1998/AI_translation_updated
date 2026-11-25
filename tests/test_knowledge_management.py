@@ -65,6 +65,22 @@ class KnowledgeManagementTests(unittest.TestCase):
         self.assertEqual([name for name, _ in self.calls], ['knowledge_list'])
         self.assertEqual(self.client.get(PREFIX + 'terms/entries?language=english').status_code, 400)
 
+    def test_glossary_snapshot_checks_access_and_reads_past_short_pages(self):
+        url = PREFIX + 'terms/snapshot?language=arabic'
+        self.members.execute.return_value.data = []
+        self.assertEqual(self.client.get(url).status_code, 403)
+        self.members.execute.return_value.data = [{'can_edit': False}]
+        table = self.db.client.table.return_value
+        page = table.select.return_value.eq.return_value.eq.return_value.eq.return_value.order.return_value.limit.return_value
+        page.execute.return_value.data = [{'id': 'a', 'status': 'active'}]
+        following = page.gt.return_value
+        following.execute.side_effect = [SimpleNamespace(data=[{'id': 'b', 'status': 'archived'}]), SimpleNamespace(data=[])]
+        result = self.client.get(url)
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertFalse(result.json['editable'])
+        self.assertEqual([row['id'] for row in result.json['rows']], ['a', 'b'])
+        self.assertEqual([call.args for call in page.gt.call_args_list], [('id', 'a'), ('id', 'b')])
+
     def test_create_edit_and_bulk_operations_use_scope_and_versions(self):
         entry = {'source': ' 收藏 ', 'target': 'المفضلة', 'scene': '背包', 'note': '标题', 'string_key': 'inventory.favorite'}
         with patch('translation_app.services.knowledge.invalidate_resources') as invalidate:
