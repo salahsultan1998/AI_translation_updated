@@ -1,0 +1,12 @@
+@baseUrl = http://127.0.0.1:8001
+@apiKey = LOCATOOL_API_KEY
+
+### 获取 Tarbia Baloot 阿拉伯语术语库
+POST {{baseUrl}}/v1/glossary
+X-API-Key: {{apiKey}}
+Content-Type: application/json
+
+{
+  "game_id": "s06",
+  "target_language": "english"
+}

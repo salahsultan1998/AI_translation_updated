@@ -103,6 +103,14 @@ Gunicorn 不会启动内置的本地 worker，生产环境仍需单独运行并�
 
 接口同步等待结果，服务端最多等待 120 秒，超过时返回 HTTP 504。调用方读取超时和反向代理等待上游响应的时间应长于 120 秒，以便收到接口明确的超时响应。超时后，后台停止派发新批次，已发出的模型请求可能继续到结束。
 
+### 导出最新术语库
+
+向同一个 API 地址发送 `POST /v1/glossary`，沿用 `X-API-Key`，请求正文示例为 `{"game_id":"tarbi3a_baloot","target_language":"arabic"}`。如果反向代理只转发了翻译路径，也要转发 `/v1/glossary` 到同一个 FastAPI 服务。
+
+接口每次读取所选项目和语言的全部「可用」术语。成功响应包含 `game_id`、`target_language`、`count`、`terms`。`terms` 是数组，每条含 `source`、`target`、`scene`、`note`。空场景表示通用，无可用术语时返回 `count: 0` 和 `terms: []`。服务端 Supabase 账号有项目只读权限即可。缺少有效凭据返回 `401`，缺少项目权限返回 `403`。
+
+`POST /v1/history` 沿用同样的请求正文、认证方式和权限，返回全部「可用」历史翻译。响应的数组字段是 `history`，每条额外包含 `string_key`。无记录时返回 `count: 0` 和 `history: []`。本地示例见 [test_API_history.http](test_API_history.http)。
+
 ## 翻译性能与失败恢复
 
 翻译请求显式发送 `reasoning: {"enabled": false}`，关闭模型内部推理以降低翻译延迟；重试和备用模型请求沿用此设置。请求开始日志包含 `reasoning_enabled=False`。变更此设置会使旧翻译检查点失效，避免混用不同请求配置的结果。实际耗时仍受模型与供应商响应影响。

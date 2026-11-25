@@ -8,6 +8,7 @@ from httpx import TransportError
 from postgrest.exceptions import APIError
 
 from .resources import invalidate_resources
+from .translation_state import check_cancelled
 
 KINDS = {'terms', 'memory'}
 STATUSES = {'active', 'pending', 'archived'}
@@ -111,13 +112,16 @@ class KnowledgeStore:
         return self._rpc('knowledge_list', p_query=query, p_scene=scene, p_status=status,
                          p_offset=offset, p_limit=limit)
 
-    def glossary_rows(self):
+    def snapshot_rows(self, *, active_only=False, settings=None):
         rows = []
         while True:
+            check_cancelled(settings or {})
             query = (self.db.client.table('knowledge_entries')
                      .select('id,source,target,scene,string_key,note,status,origin,verified,version,updated_at')
                      .eq('game_id', self.game).eq('target_language', self.scope['p_language'])
-                     .eq('kind', 'terms').order('id').limit(1000))
+                     .eq('kind', self.kind).order('id').limit(1000))
+            if active_only:
+                query = query.eq('status', 'active')
             if rows:
                 query = query.gt('id', rows[-1]['id'])
             batch = query.execute().data or []

@@ -47,6 +47,7 @@ class TranslationApiTests(unittest.TestCase):
         self.term = {'id': '20000000-0000-0000-0000-000000000001', 'kind': 'terms',
                      'source': '领取', 'target': 'Claim', 'note': '', 'scene': '', 'string_key': '', 'verified': False}
         self.reference_reads = 0
+        self.glossary_member = [{'can_edit': True}]
         self.api = self.enterContext(TestClient(http_api.app))
         self.web = create_app({'TESTING': True, 'SECRET_KEY': 'test', 'STORAGE_ROOT': storage})
         self.browser = self.web.test_client()
@@ -74,7 +75,7 @@ class TranslationApiTests(unittest.TestCase):
                 return httpx.Response(200, json=[self.prompts['system']])
             return httpx.Response(200, json=[{'kind': kind, **row} for kind, row in self.prompts.items()])
         if path == '/knowledge_project_members':
-            return httpx.Response(200, json=[{'can_edit': True}])
+            return httpx.Response(200, json=self.glossary_member)
         if path == '/rpc/knowledge_mutate':
             data = json.loads(request.content)
             self.assertEqual((data['p_game'], data['p_language'], data['p_kind'], data['p_action']),
@@ -83,10 +84,55 @@ class TranslationApiTests(unittest.TestCase):
             return httpx.Response(200, json=1)
         self.assertEqual(path, '/knowledge_entries')
         self.assertEqual(request.url.params['status'], 'eq.active')
+        if request.url.params.get('kind') == 'eq.memory':
+            self.assertEqual(request.url.params['game_id'], 'eq.s06')
+            self.assertEqual(request.url.params['target_language'], 'eq.english')
+            return httpx.Response(200, json=[] if request.url.params.get('id') else [
+                {**self.term, 'kind': 'memory', 'source': '奖励已领取', 'target': 'Reward claimed',
+                 'scene': '奖励', 'string_key': 'reward.claimed'},
+            ])
+        if request.url.params.get('kind') == 'eq.terms':
+            self.assertEqual(request.url.params['game_id'], 'eq.s06')
+            self.assertEqual(request.url.params['target_language'], 'eq.english')
+            cursor = request.url.params.get('id')
+            if cursor == 'gt.' + self.term['id']:
+                return httpx.Response(200, json=[{**self.term, 'id': '20000000-0000-0000-0000-000000000002',
+                                                  'target': 'Collect', 'scene': '奖励'}])
+            return httpx.Response(200, json=[] if cursor else [self.term])
         if request.url.params.get('offset') in (None, '0'):
             self.reference_reads += 1
             return httpx.Response(200, json=[self.term])
         return httpx.Response(200, json=[])
+
+    def test_glossary_exports_all_active_terms_with_read_only_api_account(self):
+        self.glossary_member = [{'can_edit': False}]
+        body = {'game_id': 'S06', 'target_language': 'English'}
+        url = '/v1/glossary'
+        response = self.api.post(url, headers={'X-API-Key': 'test-key'}, json=body)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {'game_id': 's06', 'target_language': 'english', 'count': 2, 'terms': [
+            {'source': '领取', 'target': 'Claim', 'scene': '', 'note': ''},
+            {'source': '领取', 'target': 'Collect', 'scene': '奖励', 'note': ''},
+        ]})
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.api.post(url, json=body).status_code, 401)
+        self.glossary_member = []
+        self.assertEqual(self.api.post(url, headers={'X-API-Key': 'test-key'}, json=body).status_code, 403)
+
+    def test_history_exports_only_active_memory_with_string_key(self):
+        url = '/v1/history'
+        body = {'game_id': 'S06', 'target_language': 'English'}
+        headers = {'X-API-Key': 'test-key'}
+        self.glossary_member = [{'can_edit': False}]
+        response = self.api.post(url, headers=headers, json=body)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {'game_id': 's06', 'target_language': 'english', 'count': 1, 'history': [
+            {'source': '奖励已领取', 'target': 'Reward claimed', 'scene': '奖励', 'note': '', 'string_key': 'reward.claimed'},
+        ]})
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.api.post(url, json=body).status_code, 401)
+        self.glossary_member = []
+        self.assertEqual(self.api.post(url, headers=headers, json=body).status_code, 403)
 
     def translate(self, *rows, key='test-key'):
         return self.api.post('/v1/translate', headers={'X-API-Key': key}, json={

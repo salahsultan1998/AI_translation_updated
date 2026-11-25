@@ -336,7 +336,7 @@ def knowledge_entries(project_id, kind):
 def glossary_snapshot(project_id):
     store = knowledge_store(project_id, 'terms', request.args.get('language'))
     editable = store.require_access()
-    return jsonify(rows=store.glossary_rows(), editable=editable, page_size=PAGE_SIZE)
+    return jsonify(rows=store.snapshot_rows(), editable=editable, page_size=PAGE_SIZE)
 
 
 @api.get('/projects/<project_id>/knowledge/<kind>/export')
