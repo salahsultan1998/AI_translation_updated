@@ -31,6 +31,7 @@ class ResourceCacheTests(unittest.TestCase):
         self.created = 0
         self.requests = []
         self.term = 'Hero'
+        self.access_token = self.token('default', expires=10**11)
         self.after_load = None
         self.after_page = None
 
@@ -44,15 +45,20 @@ class ResourceCacheTests(unittest.TestCase):
                 query.eq.return_value = query
                 query.order.return_value = query
 
+                if name == 'knowledge_project_members':
+                    query.limit.return_value = query
+                    query.execute.return_value.data = [{'can_edit': True}]
+                    return query
+
                 def page(start, end):
                     self.requests.append((name, start, end))
+                    metadata = {'note': '', 'scene': '', 'string_key': '', 'verified': False}
+                    data = [{'kind': 'terms', 'source': '英雄', 'target': self.term, **metadata},
+                            {'kind': 'memory', 'source': '你好', 'target': 'Hello', **metadata}]
                     # Deliberately cap below page size to exercise pagination.
-                    data = ([{'source_term': '英雄', 'target_term': self.term, 'note': 'noun'}]
-                            if name == 'glossaries' else
-                            [{'source_text': '你好', 'target_text': 'Hello'}])
-                    if name == 'translation_memory' and start and self.after_load:
+                    query.execute.return_value.data = data[start:start + 1]
+                    if start >= len(data) and self.after_load:
                         self.after_load()
-                    query.execute.return_value.data = data if start == 0 else []
                     if self.after_page:
                         self.after_page()
                     return query
@@ -69,7 +75,7 @@ class ResourceCacheTests(unittest.TestCase):
         self.addCleanup(self.database.stop)
 
     def load(self, settings=None):
-        return resources.load_resources(self.project, self.language, settings or {})
+        return resources.load_resources(self.project, self.language, {'access_token': self.access_token, **(settings or {})})
 
     @staticmethod
     def token(subject, expires=None):
@@ -78,13 +84,12 @@ class ResourceCacheTests(unittest.TestCase):
 
     def test_cache_returns_defensive_snapshots_and_reads_short_pages(self):
         first = self.load()
-        first[0]['英雄']['target'] = 'mutated'
+        first[0]['英雄'][0]['target'] = 'mutated'
         second = self.load()
-        self.assertEqual(second[0]['英雄']['target'], 'Hero')
+        self.assertEqual(second[0]['英雄'][0]['target'], 'Hero')
         self.assertEqual(self.created, 1)
         self.assertEqual([(name, start) for name, start, _ in self.requests],
-                         [('glossaries', 0), ('glossaries', 1),
-                          ('translation_memory', 0), ('translation_memory', 1)])
+                         [('knowledge_entries', 0), ('knowledge_entries', 1), ('knowledge_entries', 2)])
 
     def test_cancel_stops_loading_remaining_database_pages(self):
         import threading
@@ -134,11 +139,11 @@ class ResourceCacheTests(unittest.TestCase):
 from unittest.mock import patch
 from translation_app.services.resources import load_resources
 with patch('translation_app.services.database.ProjectDatabase', side_effect=AssertionError('unexpected database call')):
-    result = load_resources({'direct':False,'database_id':'S06'}, {'database_name':'English'}, {})
-    assert result[0]['英雄']['target'] == 'Hero'
-    assert result[1]['你好'] == 'Hello'
+    result = load_resources({'direct':False,'database_id':'S06'}, {'database_name':'English'}, {'access_token': %r})
+    assert result[0]['英雄'][0]['target'] == 'Hero'
+    assert result[1]['你好'][0]['target'] == 'Hello'
     assert result[2] == ''
-"""
+""" % self.access_token
         subprocess.run([sys.executable, '-c', code], check=True, capture_output=True)
         path = resources._version_path('s06').parent.parent / 'resource-cache' / 'snapshots.sqlite3'
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
@@ -158,7 +163,7 @@ with patch('translation_app.services.database.ProjectDatabase', side_effect=Asse
             self.load()
         with patch('translation_app.services.resources.time.time', return_value=125):
             result = resources.preload_resources({**self.project, 'id': 's06'},
-                                                {**self.language, 'id': 'english'}, {})
+                                                {**self.language, 'id': 'english'}, {'access_token': self.access_token})
         self.assertEqual(result['expires_in'], 5)
         self.assertEqual(self.created, 1)
 
@@ -177,13 +182,13 @@ with patch('translation_app.services.database.ProjectDatabase', side_effect=Asse
         self.assertEqual(self.created, 2)
         with patch.dict(os.environ, {'LOCATOOL_AUTH_ENABLED': 'true'}):
             with self.assertRaisesRegex(ValueError, '登录已过期'):
-                self.load()
+                self.load({'access_token': None})
 
     def test_game_generation_invalidates_all_languages_and_has_no_credentials(self):
         self.load()
         self.term = 'Updated Hero'
         resources.invalidate_resources('s06')
-        self.assertEqual(self.load()[0]['英雄']['target'], 'Updated Hero')
+        self.assertEqual(self.load()[0]['英雄'][0]['target'], 'Updated Hero')
         self.assertEqual(self.created, 2)
         marker = resources._version_path('s06')
         self.assertTrue(marker.is_file())
@@ -223,17 +228,6 @@ with patch('translation_app.services.database.ProjectDatabase', side_effect=Asse
 
 
 class ResourceInvalidationTests(unittest.TestCase):
-    def test_partial_bulk_write_invalidates_after_failure(self):
-        engine = object.__new__(ProjectDatabase)
-        engine.storage_root = '/unused'
-        engine.client = MagicMock()
-        engine.client.table.return_value.upsert.return_value.execute.side_effect = [None, RuntimeError('failed')]
-        rows = [{'game_id': 'game', 'source_term': str(i)} for i in range(3)]
-        with patch('translation_app.services.resources.invalidate_resources') as invalidate:
-            with self.assertRaisesRegex(RuntimeError, 'failed'):
-                engine._upsert('glossaries', rows, 'source_term', 2)
-        invalidate.assert_called_once_with('game', storage_root='/unused')
-
     def test_profile_write_also_invalidates_after_uncertain_error(self):
         engine = object.__new__(ProjectDatabase)
         engine.storage_root = '/unused'

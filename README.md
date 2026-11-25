@@ -20,6 +20,29 @@ Flask 多项目翻译工作台。用户选择项目或「直接翻译」，在�
 
 如果在翻译运行期间修改或删除了某一行，应用不会用返回结果覆盖该行，而会显示原始结果供参考。下载的文件是翻译服务生成的原始结果，不包含后续在表格中的修改；请使用复制功能取得编辑后的内容。刷新或重新打开工作区会清空当前用户该项目的任务和结果，请先复制或下载。进行中的外部请求可能无法立即停止，且可能产生费用。
 
+## 项目知识库
+
+在工作区打开「项目知识库」，选择「术语库」或「历史翻译」。两页均可查原文与译文、按场景及状态筛选、手动新增、粘贴 Excel 行、导入 CSV/XLSX，并导出筛选后的 XLSX。历史翻译可额外通过字符串 Key 检索。项目和目标语言限定读写范围。
+
+- 手动新增默认「可用」。批量粘贴和文件导入先预览新增、相同、冲突、无效行，确认后只保存新增项，初始状态为「待确认」。
+- 「可用」条目进入翻译参考。「待确认」和「已归档」条目仍可管理。已有记录迁移后继续作为参考，历史译文经编辑或明确设为「可用」后才有资格直接复用。
+- 复选框可选择多条，表头只全选本页。翻页保留选择，切换知识库、语言或筛选条件会清空选择。批量改状态可用于启用、暂停和归档，批量删除需要确认。任一条目的版本过期时，数据库拒绝整批操作。
+- 场景限定词条的适用范围。同一原文可保留不同场景或不同字符串 Key 的历史译文。在翻译行的「上下文」内填写相同的场景或字符串 Key，可获得对应参考。
+
+### 现有 Supabase 项目的升级
+
+先备份 Supabase，并暂停旧版写入。在已有 `public.glossaries` 和 `public.translation_memory` 的环境运行 [知识库迁移](supabase/migrations/20261125093234_knowledge_management.sql)。迁移复制两张表的原有条目，包括未挂载的 DM_03，并保留原表供管理员核对。新版 Web、Worker 和外部 API 一起切换。原表的匿名及普通用户授权会被收回。
+
+项目权限由管理员在 `public.knowledge_project_members` 配置。使用旧知识库的项目数据库 ID（小写），如 `tarbi3a_baloot`、`baloot_challenges`、`sawa`、`s06`。编辑账号使用 `can_edit=true`，仅查询或外部翻译 API 账号使用 `false`。示例中请替换项目和邮箱。多个项目分别授权。
+
+```sql
+insert into public.knowledge_project_members (game_id, user_id, can_edit)
+select 'tarbi3a_baloot', id, true from auth.users where email = 'translator@example.com'
+on conflict (game_id, user_id) do update set can_edit = excluded.can_edit;
+```
+
+切换前核对新旧表条目数量，并用编辑账号、只读账号和无权限账号验证访问。需要立即撤销某个账号的翻译缓存访问时，部署环境用 `TRANSLATION_RESOURCE_CACHE_SECONDS=0` 重新验证权限。
+
 ## 本地运行
 
 需要 Python 3.11 或更新版本。推荐使用独立虚拟环境：
@@ -32,7 +55,7 @@ cp .env.example .env  # 仅在 .env 不存在时执行，避免覆盖已有密�
 
 在 `.env` 中填写 Supabase URL、公开的 anon/publishable key 和 OpenRouter API key。不要提交 `.env`，不要将 service-role key 当作网页用户凭据。
 
-本地开发时，在 `.env` 中设置 `LOCATOOL_AUTH_ENABLED=false` 可跳过登录。只有明确设为 `false`、`0`、`no` 或 `off` 才会关闭登录；未设置或值无效时默认启用。关闭登录时无需输入账户，但项目知识库仍使用 Supabase key 的匿名权限：如果表权限或 RLS 不允许匿名访问，读取和写入会失败，不能通过关闭登录绕过这些限制。浏览器会话使用各自的任务标识，但这不是身份认证。
+本地开发时，在 `.env` 中设置 `LOCATOOL_AUTH_ENABLED=false` 可跳过登录。只有明确设为 `false`、`0`、`no` 或 `off` 才会关闭登录；未设置或值无效时默认启用。关闭登录时可使用「直接翻译」。项目知识库及使用它的项目翻译需要登录，并由 Supabase 验证项目权限。浏览器会话使用各自的任务标识。
 
 在生产环境设为 `LOCATOOL_AUTH_ENABLED=true`，Web 和 worker 必须使用同一设置，并验证 Supabase 登录账户与表权限/RLS 策略。关闭登录时不要把服务公开到互联网。
 
@@ -76,7 +99,7 @@ Gunicorn 不会启动内置的本地 worker，生产环境仍需单独运行并�
 
 将原 API 地址的 `POST /v1/translate` 转发给此进程，调用请求和成功响应沿用旧格式。传入 `game_id`、`target_language` 和 `texts`，`texts` 包含一条或多条记录。每条可传 `id` 和 `context`，译文按原顺序返回并带回原 ID。可选项包括 `model`、`batch_size`、`use_smart_budget` 和 `custom_instructions`。知识库和校验始终启用，旧请求可继续传 `validate: true` 和 `use_rag: true`。备用模型沿用服务器的 `OPENROUTER_FALLBACK_MODEL`。
 
-沿用已有的 `LOCATOOL_API_KEY`，调用方通过 `X-API-Key` 发送。生产环境在 API 服务端配置 `LOCATOOL_API_SUPABASE_EMAIL` 和 `LOCATOOL_API_SUPABASE_PASSWORD`，使用对提示词、术语和翻译记忆有读取权限的普通 Supabase 账号。现有 Supabase 用户也可用其访问 Token 作为 Bearer 凭据。Flask、FastAPI 和 Worker 使用同一份代码、Supabase 配置和 `LOCATOOL_STORAGE`。网页保存术语会使共享缓存失效，保存提示词后新请求会直接读取新内容。
+沿用已有的 `LOCATOOL_API_KEY`，调用方通过 `X-API-Key` 发送。生产环境在 API 服务端配置 `LOCATOOL_API_SUPABASE_EMAIL` 和 `LOCATOOL_API_SUPABASE_PASSWORD`，使用对提示词、术语和翻译记忆有读取权限的普通 Supabase 账号。现有 Supabase 用户也可用其访问 Token 作为 Bearer 凭据。Flask、FastAPI 和 Worker 使用同一份代码、Supabase 配置和 `LOCATOOL_STORAGE`。网页保存术语或历史翻译会使共享缓存失效，保存提示词后新请求会直接读取新内容。
 
 接口同步等待结果，服务端最多等待 120 秒，超过时返回 HTTP 504。调用方读取超时和反向代理等待上游响应的时间应长于 120 秒，以便收到接口明确的超时响应。超时后，后台停止派发新批次，已发出的模型请求可能继续到结束。
 
@@ -106,7 +129,7 @@ TRANSLATION_RESOURCE_CACHE_SECONDS=300
 
 默认每批最多 40 行，只为即将发送的批次生成参考上下文，避免整份文件的上下文同时驻留内存。自动分批根据估算输出量组批，完整参考上下文拼接后再检查输入、输出预算；手动模式也执行预算检查，必要时拆小。Token 使用启发式估算，并非模型的精确分词；目标语言膨胀、变量较多时仍可能触及模型输出上限。单行超出预算时会提示缩短内容，不会擅自切断语义。调整预算必须考虑所选模型的实际限制，并用样本检查漏行、标签和译文质量。预算按批次检查，后续行超限时前面的请求可能已完成并计费，成功行仍会保存到检查点。
 
-同一任务内，原文和上下文都相同的行会跨工作表复用译文；不同语境请填入上下文。高级设置中的「直接复用完全匹配的翻译记忆」默认关闭，启用后仅复用无行上下文、无本次补充要求且变量标签匹配的记忆；它会跳过模型根据已保存 Instructions 对旧译文的风格调整，因此只适用于已审核的记忆。
+同一任务内，原文和上下文都相同的行会跨工作表复用译文；不同语境请填入上下文。高级设置中的「直接复用完全匹配的翻译记忆」默认关闭，启用后只复用已确认的唯一通用记忆，且需原文和变量标签完全匹配。本次有补充要求、该行有上下文或有适用术语时，仍交给 AI。快捷复用会跳过模型的风格调整。
 
 排队或翻译中会显示「停止翻译」按钮。排队任务立即停止且不会被 Worker 领取；运行中的任务进入「正在停止」，Worker 停止派发新批次、等待并发槽位及重试。已发到供应商的 HTTP 请求无法保证撤回，可能继续处理和计费；它们返回的有效结果仍会保存到检查点，全部收尾后状态变为「已停止」。停止期间不能继续同一任务，完成收尾后可点击「继续未完成的翻译」。取消接口为 `POST /api/jobs/<id>/cancel`，按任务所有者及 CSRF 校验；已完成的任务不会被晚到的停止请求覆盖。
 

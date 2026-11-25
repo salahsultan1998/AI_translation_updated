@@ -39,12 +39,13 @@ class TranslationApiTests(unittest.TestCase):
         def database_client(*args):
             postgrest = SyncPostgrestClient('https://example.invalid', http_client=self.backend,
                                            retry_enabled=False)
-            return SimpleNamespace(postgrest=postgrest, table=postgrest.from_)
+            return SimpleNamespace(postgrest=postgrest, table=postgrest.from_, rpc=postgrest.rpc)
 
         self.enterContext(patch('supabase.create_client', side_effect=database_client))
         self.prompts = {'system': {'content': 'Old prompt', 'version': 1},
                         'instructions': {'content': 'Project instructions', 'version': 1}}
-        self.term = {'source_term': '领取', 'target_term': 'Claim', 'note': ''}
+        self.term = {'id': '20000000-0000-0000-0000-000000000001', 'kind': 'terms',
+                     'source': '领取', 'target': 'Claim', 'note': '', 'scene': '', 'string_key': '', 'verified': False}
         self.reference_reads = 0
         self.api = self.enterContext(TestClient(http_api.app))
         self.web = create_app({'TESTING': True, 'SECRET_KEY': 'test', 'STORAGE_ROOT': storage})
@@ -72,14 +73,19 @@ class TranslationApiTests(unittest.TestCase):
                 self.prompts['system'] = {'content': json.loads(request.content)['content'], 'version': 2}
                 return httpx.Response(200, json=[self.prompts['system']])
             return httpx.Response(200, json=[{'kind': kind, **row} for kind, row in self.prompts.items()])
-        if path == '/glossaries':
-            if method == 'POST':
-                self.term = json.loads(request.content)[0]
-                return httpx.Response(201, json=[self.term])
-            if request.url.params.get('offset') in (None, '0'):
-                self.reference_reads += 1
-                return httpx.Response(200, json=[self.term])
-        self.assertIn(path, {'/glossaries', '/translation_memory'})
+        if path == '/knowledge_project_members':
+            return httpx.Response(200, json=[{'can_edit': True}])
+        if path == '/rpc/knowledge_mutate':
+            data = json.loads(request.content)
+            self.assertEqual((data['p_game'], data['p_language'], data['p_kind'], data['p_action']),
+                             ('s06', 'english', 'terms', 'edit'))
+            self.term.update(data['p_rows'][0])
+            return httpx.Response(200, json=1)
+        self.assertEqual(path, '/knowledge_entries')
+        self.assertEqual(request.url.params['status'], 'eq.active')
+        if request.url.params.get('offset') in (None, '0'):
+            self.reference_reads += 1
+            return httpx.Response(200, json=[self.term])
         return httpx.Response(200, json=[])
 
     def translate(self, *rows, key='test-key'):
@@ -100,13 +106,13 @@ class TranslationApiTests(unittest.TestCase):
         self.assertEqual(self.translate(row).status_code, 200)
         self.assertEqual(self.reference_reads, 1)
 
-        for path, payload in [
-            ('prompts', {'kind': 'system', 'content': 'Updated prompt', 'version': 1}),
-            ('glossary/save', {'pairs': [{'source': '领取', 'target': 'Collect'}]}),
-        ]:
-            saved = self.browser.post(f'/api/projects/s06/{path}', headers=self.csrf,
-                                      json={'language': 'english', **payload})
-            self.assertEqual(saved.status_code, 200, saved.text)
+        saved = self.browser.post('/api/projects/s06/prompts', headers=self.csrf, json={
+            'language': 'english', 'kind': 'system', 'content': 'Updated prompt', 'version': 1})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        saved = self.browser.patch('/api/projects/s06/knowledge/terms/entries/' + self.term['id'],
+                                   headers=self.csrf, json={'language': 'english', 'version': 1, 'status': 'active',
+                                                           'entry': {'source': '领取', 'target': 'Collect'}})
+        self.assertEqual(saved.status_code, 200, saved.text)
 
         batch = self.translate(*[{**row, 'id': f'svn_{i}', 'context': f'Button {i}'} for i in range(10)])
         self.assertEqual(batch.status_code, 200, batch.text)
@@ -122,7 +128,8 @@ class TranslationApiTests(unittest.TestCase):
         self.assertEqual(job.status_code, 202, job.text)
         process_one(self.web.extensions['jobs'])
         self.assertEqual(self.browser.get('/api/jobs/' + job.json['id']).json['status'], 'completed')
-        self.assertEqual(self.calls[-1], api_configuration)
+        self.assertEqual(self.calls[-1][:2], api_configuration[:2])
+        self.assertIn('[rows 0] 领取 : Collect', self.calls[-1][2])
 
     def test_deadline_signals_cancellation_and_returns_504(self):
         observed = threading.Event()

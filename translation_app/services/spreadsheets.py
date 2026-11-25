@@ -284,3 +284,38 @@ def write_translations(original_path, output_path, mappings, results):
         book.save(output_path)
     finally:
         book.close()
+
+
+def read_knowledge_rows(path, sheet_name, mapping, limit):
+    """Yield original row numbers and mapped values for a knowledge import."""
+    def mapped(headers, rows):
+        selected = [name for name in mapping.values() if name]
+        if len(selected) != len(set(selected)) or any(name not in headers for name in selected):
+            raise ValueError("所选列不存在或重复。")
+        columns = {field: headers.index(name) for field, name in mapping.items() if name}
+        for index, row in rows:
+            if index >= limit:
+                raise ValueError(f"每次最多导入 {limit} 行。")
+            if len(row) > MAX_COLUMNS:
+                raise ValueError(f"文件列数不可超过 {MAX_COLUMNS} 列")
+            values = {field: _display(row[column]) if column < len(row) else "" for field, column in columns.items()}
+            if any(value.strip() for value in values.values()):
+                yield index + 2, values
+
+    if path.suffix.lower() == ".csv":
+        if sheet_name != CSV_SHEET:
+            raise ValueError("选择的工作表不存在。")
+        with _csv_rows(path) as (_, headers, rows):
+            yield from mapped(headers, rows)
+        return
+
+    book = _open_workbook(path, read_only=True, data_only=True)
+    try:
+        if sheet_name not in book.sheetnames:
+            raise ValueError("选择的工作表不存在。")
+        sheet = book[sheet_name]
+        _check_dimensions(sheet)
+        rows = sheet.iter_rows(values_only=True)
+        yield from mapped(_headers(next(rows, ())), enumerate(rows))
+    finally:
+        book.close()

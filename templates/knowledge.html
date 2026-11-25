@@ -1,0 +1,142 @@
+<section id="knowledge-panel" class="panel knowledge-library" role="tabpanel" aria-labelledby="workspace-knowledge-tab" hidden>
+  <div class="knowledge-intro">
+    <h2>项目知识库</h2>
+    <span class="knowledge-language" id="kb-language"></span>
+  </div>
+  <div class="knowledge-tabs" role="tablist" aria-label="知识库类型">
+    <button type="button" role="tab" id="kb-terms" aria-controls="kb-library" aria-selected="true" data-kind="terms">术语库</button>
+    <button type="button" role="tab" id="kb-memory" aria-controls="kb-library" aria-selected="false" data-kind="memory" tabindex="-1">历史翻译</button>
+  </div>
+
+  <div id="kb-library" role="tabpanel" aria-labelledby="kb-terms">
+    <div class="knowledge-heading">
+      <div>
+        <h3 id="kb-title">术语库</h3>
+        <p class="muted small" id="kb-description">项目内统一使用的词语和短语</p>
+      </div>
+      <div class="knowledge-actions" id="kb-write-actions" hidden>
+        <button type="button" class="secondary compact" id="kb-paste">批量粘贴</button>
+        <button type="button" class="secondary compact" id="kb-import">导入文件</button>
+        <button type="button" class="compact" id="kb-new">新增术语</button>
+      </div>
+    </div>
+    <div id="kb-error" class="notice error" role="alert" hidden></div>
+    <div id="kb-notice" class="notice success" role="status" hidden></div>
+    <div class="knowledge-data">
+      <div class="knowledge-filters">
+        <label class="knowledge-search"><span class="sr-only">搜索知识库</span><input type="search" id="kb-search" placeholder="搜索原文、译文或 Key" maxlength="300"></label>
+        <label><span class="sr-only">适用场景</span><select id="kb-scenes"><option value="">全部场景</option></select></label>
+        <label><span class="sr-only">状态</span>
+          <select id="kb-filter"><option value="current">未归档</option><option value="active">可用</option><option value="pending">待确认</option><option value="archived">已归档</option></select>
+        </label>
+      </div>
+      <div class="knowledge-bulk" id="kb-bulk" role="group" aria-label="批量操作" hidden>
+        <div class="knowledge-actions">
+          <strong id="kb-selected" aria-live="polite"></strong>
+          <button type="button" class="text-button compact" id="kb-clear-selection">取消选择</button>
+        </div>
+        <div class="knowledge-actions">
+          <label><span class="sr-only">批量更改状态</span>
+            <select id="kb-bulk-status"><option value="">更改状态</option><option value="active">设为可用</option><option value="pending">设为待确认</option><option value="archived">归档</option></select>
+          </label>
+          <button type="button" class="compact" id="kb-apply-status" disabled>应用</button>
+          <button type="button" class="secondary compact knowledge-delete" id="kb-delete">删除…</button>
+        </div>
+      </div>
+      <div class="knowledge-table-wrap">
+        <table class="knowledge-table" aria-label="知识库条目">
+          <thead><tr>
+            <th class="knowledge-select" scope="col"><label><input type="checkbox" id="kb-select-page" aria-label="选择本页全部条目" disabled></label></th>
+            <th scope="col" id="kb-source-heading">原文术语</th>
+            <th scope="col" id="kb-target-heading">标准译法</th>
+            <th scope="col" class="knowledge-scene">适用场景</th>
+            <th scope="col" class="knowledge-state">状态</th>
+            <th scope="col" class="knowledge-date">最近更新</th>
+            <th scope="col" class="knowledge-row-action"><span class="sr-only">操作</span></th>
+          </tr></thead>
+          <tbody id="kb-rows"></tbody>
+        </table>
+      </div>
+      <div class="knowledge-empty muted" id="kb-empty">正在加载知识库…</div>
+      <div class="knowledge-footer">
+        <div class="knowledge-actions">
+          <span class="muted small" id="kb-count" aria-live="polite"></span>
+          <a id="kb-export" class="button secondary compact" hidden>导出 XLSX</a>
+          <button type="button" class="secondary compact" id="kb-retry" hidden>重新加载</button>
+        </div>
+        <div class="knowledge-actions">
+          <button type="button" class="secondary compact" id="kb-prev" aria-label="上一页" disabled>‹</button>
+          <span class="muted small" id="kb-pages">1 / 1</span>
+          <button type="button" class="secondary compact" id="kb-next" aria-label="下一页" disabled>›</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <dialog class="knowledge-dialog" id="kb-editor" aria-labelledby="kb-editor-title">
+    <form id="kb-form">
+      <div class="knowledge-dialog-heading"><h3 id="kb-editor-title"></h3><button type="button" class="text-button compact" data-close aria-label="关闭">×</button></div>
+      <div class="knowledge-dialog-body">
+        <div class="fields two">
+          <label><span id="kb-source-label">原文术语</span><textarea name="source" rows="3" required maxlength="20000"></textarea></label>
+          <label><span id="kb-target-label">标准译法</span><textarea name="target" rows="3" required maxlength="20000" dir="auto"></textarea></label>
+        </div>
+        <div class="fields two">
+          <label>适用场景 <input name="scene" maxlength="200" placeholder="选填"></label>
+          <label>状态 <select name="status" aria-label="状态"><option value="active">可用</option><option value="pending">待确认</option><option value="archived">已归档</option></select></label>
+        </div>
+        <label id="kb-key-field" hidden>字符串 Key <input name="string_key" maxlength="300" placeholder="选填"></label>
+        <label><span id="kb-note-label">使用说明</span><textarea name="note" rows="2" maxlength="8000" placeholder="选填"></textarea></label>
+        <p class="muted small" id="kb-entry-meta" hidden></p>
+        <div class="notice error" role="alert" data-dialog-error hidden></div>
+      </div>
+      <div class="knowledge-dialog-footer">
+        <button type="button" class="text-button compact knowledge-archive" id="kb-archive" hidden></button>
+        <button type="button" class="secondary compact" data-close>关闭</button>
+        <button type="submit" class="compact" id="kb-save">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="knowledge-dialog" id="kb-import-dialog" aria-labelledby="kb-import-title">
+    <div class="knowledge-dialog-heading"><h3 id="kb-import-title"></h3><button type="button" class="text-button compact" data-close aria-label="关闭">×</button></div>
+    <div class="knowledge-dialog-body">
+      <label id="kb-paste-field"><span id="kb-paste-label">从 Excel 复制多行后粘贴</span><textarea id="kb-paste-text" rows="5" spellcheck="false"></textarea></label>
+      <div id="kb-file-field" hidden>
+        <label>选择 CSV 或 XLSX 文件 <input type="file" accept=".csv,.xlsx" id="kb-file"></label>
+        <button type="button" class="secondary compact" id="kb-file-read">读取文件</button>
+      </div>
+      <div class="fields two" id="kb-mapping" hidden>
+        <label>工作表 <select id="kb-sheet"></select></label>
+        <label>原文列 <select id="kb-map-source" data-mapping="source"></select></label>
+        <label>译文列 <select id="kb-map-target" data-mapping="target"></select></label>
+        <label>场景列（选填） <select id="kb-map-scene" data-mapping="scene"></select></label>
+        <label>备注列（选填） <select id="kb-map-note" data-mapping="note"></select></label>
+        <label id="kb-import-key">字符串 Key 列（选填） <select id="kb-map-key" data-mapping="string_key"></select></label>
+      </div>
+      <div class="knowledge-actions"><button type="button" class="secondary compact" id="kb-preview">预览变更</button></div>
+      <div id="kb-preview-result" hidden>
+        <p id="kb-preview-counts" role="status"></p>
+        <ul class="knowledge-preview-list" id="kb-preview-rows"></ul>
+      </div>
+      <div class="notice error" role="alert" data-dialog-error hidden></div>
+    </div>
+    <div class="knowledge-dialog-footer">
+      <button type="button" class="secondary compact" data-close>取消</button>
+      <button type="button" class="compact" id="kb-commit" disabled>保存新增项</button>
+    </div>
+  </dialog>
+
+  <dialog class="knowledge-dialog" id="kb-delete-dialog" aria-labelledby="kb-delete-title">
+    <div class="knowledge-dialog-heading"><h3 id="kb-delete-title">批量删除</h3><button type="button" class="text-button compact" data-close aria-label="关闭">×</button></div>
+    <div class="knowledge-dialog-body">
+      <p>删除后无法恢复。只想停用时可选择归档。</p>
+      <ul class="knowledge-preview-list" id="kb-delete-rows"></ul>
+      <div class="notice error" role="alert" data-dialog-error hidden></div>
+    </div>
+    <div class="knowledge-dialog-footer">
+      <button type="button" class="secondary compact" data-close id="kb-cancel-delete">取消</button>
+      <button type="button" class="compact knowledge-danger" id="kb-confirm-delete">确认删除</button>
+    </div>
+  </dialog>
+</section>

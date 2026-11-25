@@ -16,6 +16,7 @@ from supabase_auth.errors import AuthApiError
 from .auth_config import auth_enabled
 from .services import translation
 from .services.database import ProjectDatabase
+from .services.knowledge import KnowledgeError
 from .services.projects import list_languages, list_projects
 from .services.prompt_editor import PromptUnavailable, prompt_settings, read_prompts
 from .services.settings import DEFAULT_BATCH_SIZE, translation_settings
@@ -142,6 +143,8 @@ async def translate(request: TranslateRequest, x_api_key: str | None = Header(de
         raise
     except PromptUnavailable as error:
         raise HTTPException(503, str(error)) from None
+    except KnowledgeError as error:
+        raise HTTPException(error.status, str(error)) from None
     except Exception as error:
         _logger.warning('Translation API failed: %s', type(error).__name__)
         raise HTTPException(502, '翻译失败，请检查输入或稍后重试') from None

@@ -19,6 +19,8 @@ import uuid
 from contextlib import contextmanager
 from typing import Any, Callable
 
+from .services.knowledge import KnowledgeError
+
 LOG = logging.getLogger(__name__)
 WORKER_HEARTBEAT_INTERVAL = 5
 WORKER_HEARTBEAT_TTL = 20
@@ -410,7 +412,7 @@ def process_one(store: JobStore, translator: Callable | None = None, *,
         detail = str(error)
         if isinstance(error, ValueError) and detail == "登录已过期，请重新登录":
             message = "登录已过期，请重新登录后重新提交。"
-        elif (detail in safe_messages or re.fullmatch(r"第 \d+ 行的变量或标签不匹配", detail)
+        elif (isinstance(error, KnowledgeError) or detail in safe_messages or re.fullmatch(r"第 \d+ 行的变量或标签不匹配", detail)
               or re.fullmatch(r"翻译服务拒绝请求（HTTP [45]\d\d），请检查模型和服务配置", detail)
               or re.fullmatch(r"翻译服务暂不可用（HTTP [45]\d\d），请稍后重试", detail)):
             message = detail

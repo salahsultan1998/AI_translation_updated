@@ -5,13 +5,16 @@
   const projectId = workspace.dataset.project;
   const isDirect = workspace.dataset.direct === 'true';
   const csrf = document.querySelector('meta[name="csrf-token"]').content;
-  const state = { input: 'manual', upload: null, knowledge: null, cleanPairs: [], conflicts: [], timer: null, languageChanged: false, submitted: null };
+  const state = { input: 'manual', upload: null, timer: null, languageChanged: false, submitted: null };
   const node = (tag, text, className) => { const el = document.createElement(tag); if (text != null) el.textContent = text; if (className) el.className = className; return el; };
   const workerHint = node('p', '', 'muted small');
   workerHint.setAttribute('role', 'status');
   workerHint.hidden = true;
   $('job-status').appendChild(workerHint);
   const resourcePreloads = new Map();
+  const library = isDirect ? null : window.createKnowledgeLibrary({
+    panel: $('knowledge-panel'), projectId, language: $('language'), request, changed: refreshKnowledge
+  });
   const knowledgeStatus = node('p', '', 'muted small');
   knowledgeStatus.setAttribute('role', 'status');
   if (!isDirect) $('language').closest('section').insertAdjacentElement('afterend', knowledgeStatus);
@@ -63,7 +66,11 @@
     try { response = await fetch(url, { ...options, headers, credentials: 'same-origin' }); }
     catch (_) { throw new Error('网络连接失败，请检查服务后重试。'); }
     let data; try { data = await response.json(); } catch (_) { data = {}; }
-    if (!response.ok) throw new Error(data.error || '操作失败，请稍后重试。');
+    if (!response.ok) {
+      const error = new Error(data.error || '操作失败，请稍后重试。');
+      error.status = response.status;
+      throw error;
+    }
     return data;
   }
   function table(target, columns, rows) {
@@ -145,6 +152,7 @@
     if ($('knowledge-panel')) $('knowledge-panel').hidden = button.dataset.tab !== 'knowledge';
     $('config-panel').hidden = button.dataset.tab !== 'config';
     if (button.dataset.tab === 'config') loadPrompts();
+    if (button.dataset.tab === 'knowledge') library.open();
   }));
   let promptLanguage = $('language').value;
   $('language').addEventListener('change', event => {
@@ -153,6 +161,7 @@
     }
     promptLanguage = $('language').value;
     if (!$('config-panel').hidden) loadPrompts();
+    library?.languageChanged();
   });
   window.addEventListener('beforeunload', event => { if (promptsDirty()) { event.preventDefault(); event.returnValue = ''; } });
   document.querySelectorAll('[data-input]').forEach(button => button.addEventListener('click', () => {
@@ -347,18 +356,4 @@
     knowledgeStatus.textContent = '正在加载项目知识库…';
     preloadResources($('language').value).catch(() => {});
   });
-  const termGrid = window.createManualGrid($('term-rows'), {showError, showNotice, labels: ['原文', '译文', '备注']});
-  $('add-term').addEventListener('click', termGrid.addRow);
-  function collectTerms() { return termGrid.snapshot().map(row => ({source: row.source_text.trim(), target: row.context.trim(), note: row.translated_text.trim()})).filter(pair => pair.source && pair.target); }
-  async function saveTerms(pairs) { if (!pairs.length) { $('conflicts').hidden = true; showNotice('已保留所有现有术语，无需保存。'); return; } const result = await request(`/api/projects/${encodeURIComponent(projectId)}/glossary/save`, {method:'POST',body:{language:$('language').value,pairs}}); $('conflicts').hidden = true; showNotice(`已保存 ${result.count} 条术语。`); refreshKnowledge(); }
-  $('check-terms').addEventListener('click', async () => { clearMessages(); try { const pairs = collectTerms(); if (!pairs.length) throw new Error('请至少填写一条完整的原文和译文。'); const result = await request(`/api/projects/${encodeURIComponent(projectId)}/glossary/check`, {method:'POST',body:{language:$('language').value,pairs}}); state.cleanPairs = result.clean_pairs || []; state.conflicts = result.conflicts || []; if (!state.conflicts.length) { await saveTerms(state.cleanPairs); return; } const list = $('conflict-list'); list.replaceChildren(); state.conflicts.forEach(conflict => { const card = node('div',null,'conflict-card'); card.append(node('strong',conflict.source),node('p',`已有：${conflict.existing_target} ${conflict.existing_note || ''}`),node('p',`新内容：${conflict.new_target} ${conflict.new_note || ''}`)); const overwrite = node('input'); overwrite.type = 'checkbox'; const label = node('label'); label.append(overwrite, node('span','用新内容覆盖')); card.appendChild(label); list.appendChild(card); }); $('conflicts').hidden = false; } catch (e) { showError(e.message); } });
-  $('save-conflicts').addEventListener('click', async () => { try { const selected = [...$('conflict-list').children].flatMap((card, index) => card.querySelector('input').checked ? [{source:state.conflicts[index].source,target:state.conflicts[index].new_target,note:state.conflicts[index].new_note || ''}] : []); await saveTerms([...state.cleanPairs,...selected]); } catch (e) { showError(e.message); } });
-  $('keep-all').addEventListener('click', () => document.querySelectorAll('#conflict-list input').forEach(input => { input.checked = false; }));
-  $('overwrite-all').addEventListener('click', () => document.querySelectorAll('#conflict-list input').forEach(input => { input.checked = true; }));
-  $('language').addEventListener('change', () => { $('conflicts').hidden = true; state.cleanPairs = []; state.conflicts = []; });
-  $('knowledge-file').addEventListener('change', () => { state.knowledge = null; $('knowledge-mapping').hidden = true; });
-  function updateKnowledgeSheet() { const sheet = state.knowledge.sheets.find(s => s.name === $('knowledge-sheet').value); if (!sheet) return; selectOptions($('knowledge-source'),sheet.columns); selectOptions($('knowledge-target'),sheet.columns); if (sheet.columns.length > 1) $('knowledge-target').selectedIndex = 1; selectOptions($('knowledge-note'),sheet.columns,true); table($('knowledge-preview'),sheet.columns,sheet.rows || []); }
-  $('knowledge-sheet').addEventListener('change', updateKnowledgeSheet);
-  $('preview-knowledge').addEventListener('click', async () => { clearMessages(); try { state.knowledge = await previewUpload($('knowledge-file')); selectOptions($('knowledge-sheet'), state.knowledge.sheets.map(sheet => sheet.name)); updateKnowledgeSheet(); $('knowledge-mapping').hidden = false; } catch (e) { showError(e.message); } });
-  $('upload-knowledge').addEventListener('click', async () => { clearMessages(); try { if (!state.knowledge || !$('knowledge-file').files[0]) throw new Error('请先上传并预览文件。'); const body = new FormData(); body.append('file',$('knowledge-file').files[0]); for (const [key,id] of [['language','language'],['kind','knowledge-kind'],['sheet','knowledge-sheet'],['source','knowledge-source'],['target','knowledge-target'],['note','knowledge-note']]) body.append(key,$(id).value); const result = await request(`/api/projects/${encodeURIComponent(projectId)}/knowledge/upload`, {method:'POST',body}); showNotice(`已导入 ${result.count} 条记录。`); refreshKnowledge(); } catch (e) { showError(e.message); } });
 })();

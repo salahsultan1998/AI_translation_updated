@@ -25,7 +25,17 @@ _TAGS = re.compile(r"(\{[^{}]+\}|%[sdif]|<[^>]+>)")
 class _ContextIndex:
     def __init__(self, terms, memory):
         self.terms, self.memory = terms, memory
-        self.sources = list(memory)
+        self.sources = []
+        self.scoped_sources = {}
+        for source, value in memory.items():
+            options = self._variants(value)
+            if any(not self._scoped(row) for row in options):
+                self.sources.append(source)
+            for row in options:
+                if row.get('scene'):
+                    self.scoped_sources.setdefault(row['scene'].casefold(), set()).add(source)
+                if row.get('string_key'):
+                    self.scoped_sources.setdefault(row['string_key'], set()).add(source)
         self.automaton = None
         self.rapid = None
         try:
@@ -48,42 +58,88 @@ class _ContextIndex:
             pass
         self._references = {}
 
-    def references(self, source):
-        if source in self._references:
-            return self._references[source]
+    @staticmethod
+    def _variants(value):
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            return [{'target': value, 'verified': True}]
+        return [value] if isinstance(value, dict) else []
+
+    @staticmethod
+    def _scoped(row):
+        return row.get('scene') or row.get('string_key')
+
+    def _applicable(self, value, context):
+        variants = self._variants(value)
+        if context:
+            keys = [row for row in variants if row.get('string_key') == context]
+            if keys:
+                return keys
+            scene = context.casefold()
+            matches = [row for row in variants if row.get('scene', '').casefold() == scene]
+            if matches:
+                return matches
+        return [row for row in variants if not self._scoped(row)]
+
+    def _term_matches(self, source, context):
         matches = (term for _, term in self.automaton.iter(source)) if self.automaton else (
             term for term in self.terms if term and term in source)
-        terms = set()
         for term in matches:
-            item = self.terms[term]
-            target = item.get("target", "") if isinstance(item, dict) else item
-            note = item.get("note", "") if isinstance(item, dict) else ""
-            terms.add(f"{term} : {target}" + (f" (Rule: {note})" if note else ""))
-        if source in self.memory:
+            for row in self._applicable(self.terms[term], context):
+                yield term, row
+
+    def exact_target(self, source):
+        options = self._variants(self.memory.get(source))
+        if (len(options) == 1 and options[0].get('verified') and not self._scoped(options[0])
+                and not any(self._term_matches(source, ''))):
+            return options[0]['target']
+        return None
+
+    def references(self, source, context=''):
+        key = source, context
+        if key in self._references:
+            return self._references[key]
+        terms = set()
+        for term, row in self._term_matches(source, context):
+            note = row.get('note')
+            terms.add(f"{term} : {row['target']}" + (f" (Rule: {note})" if note else ""))
+        sources = self.sources
+        if context:
+            specific = self.scoped_sources.get(context, set()) | self.scoped_sources.get(context.casefold(), set())
+            if specific:
+                sources = list(dict.fromkeys([*sorted(specific), *sources]))
+        if self._applicable(self.memory.get(source), context):
             memory_matches = [source]
         elif self.rapid:
             process, fuzz = self.rapid
             memory_matches = [value for value, _, _ in process.extract(
-                source, self.sources, scorer=fuzz.WRatio, limit=2, score_cutoff=85)]
+                source, sources, scorer=fuzz.WRatio, limit=2, score_cutoff=85)]
         else:
             from difflib import get_close_matches
-            memory_matches = get_close_matches(source, self.sources, n=2, cutoff=.85)
-        result = terms, {f"{match} -> {self.memory[match]}" for match in memory_matches}
+            memory_matches = get_close_matches(source, sources, n=2, cutoff=.85)
+        memories = set()
+        for match in memory_matches:
+            targets = {row['target'] for row in self._applicable(self.memory[match], context)}
+            if len(targets) == 1:
+                memories.add(f"{match} -> {targets.pop()}")
+        result = terms, memories
         if len(self._references) >= 256:
             self._references.pop(next(iter(self._references)))
-        self._references[source] = result
+        self._references[key] = result
         return result
 
     def build(self, rows):
-        pieces, found_terms, found_memory = [], set(), set()
-        for _, source, _ in rows:
-            terms, memory = self.references(source)
-            found_terms.update(terms)
-            found_memory.update(memory)
-        if found_terms:
-            pieces.append("### GLOSSARY TERMS:\n" + "\n".join("- " + s for s in sorted(found_terms)))
-        if found_memory:
-            pieces.append("### TRANSLATION MEMORY:\n" + "\n".join("- " + s for s in sorted(found_memory)))
+        pieces, found_terms, found_memory = [], {}, {}
+        for row_id, source, context in rows:
+            terms, memory = self.references(source, context)
+            for target, references in ((found_terms, terms), (found_memory, memory)):
+                for reference in references:
+                    target.setdefault(reference, []).append(str(row_id))
+        for heading, references in (("GLOSSARY TERMS", found_terms), ("TRANSLATION MEMORY", found_memory)):
+            if references:
+                lines = [f"- [rows {','.join(ids)}] {reference}" for reference, ids in sorted(references.items())]
+                pieces.append(f"### {heading}:\n" + "\n".join(lines))
         return "\n\n".join(pieces)
 
 
@@ -191,7 +247,8 @@ def _request_data(rows, system_prompt, target_language, context, settings):
     payload_rows = [{"row_id": row_id, "source_text": source, "context": ctx} for row_id, source, ctx in rows]
     instruction = settings.get("instructions", "")
     temporary = settings.get('custom_instructions', '').strip()
-    user = (f"### TARGET LANGUAGE: {target_language}\n\n### REFERENCE CONTEXT:\n{context}\n\n"
+    row_scope = 'Use each reference only for the listed row IDs.\n' if context else ''
+    user = (f"### TARGET LANGUAGE: {target_language}\n\n### REFERENCE CONTEXT:\n{row_scope}{context}\n\n"
             f"### INSTRUCTIONS:\n{instruction}\n\n")
     if temporary:
         user += f'### TEMPORARY INSTRUCTIONS:\n{temporary}\n\n'
@@ -412,13 +469,15 @@ def _translate_mapped(read, project_id, language, settings, progress, provider, 
             {'row_id': row_id, 'translated_text': text} for row_id, text in translated.items()])
         translated = valid
         restored = len(translated)
+        index = _ContextIndex(terms, memory)
         exact = {}
         if settings.get('use_exact_memory') and not settings.get('custom_instructions', '').strip():
             for row in unique:
                 row_id, source, context = row
-                if row_id not in translated and not context and memory.get(source):
+                target = index.exact_target(source) if row_id not in translated and not context else None
+                if target:
                     try:
-                        exact.update(_check_response([row], [{'row_id': row_id, 'translated_text': memory[source]}]))
+                        exact.update(_check_response([row], [{'row_id': row_id, 'translated_text': target}]))
                     except ValueError:
                         pass  # Unsafe memory is a reference only, never a fast-path result.
         if exact:
@@ -426,7 +485,6 @@ def _translate_mapped(read, project_id, language, settings, progress, provider, 
                 checkpoint.save(exact)
             translated.update(exact)
         pending_rows = [row for row in unique if row[0] not in translated]
-        index = _ContextIndex(terms, memory)
 
         def plans():
             for batch in _iter_batches(pending_rows, batch_size, bool(settings.get('use_smart_budget', True))):

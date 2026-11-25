@@ -1,4 +1,7 @@
+import base64
+import json
 import os
+import time
 from pathlib import Path
 import tempfile
 import unittest
@@ -13,17 +16,26 @@ class KnowledgePreloadTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        env = patch.dict(os.environ, {'LOCATOOL_AUTH_ENABLED': 'false',
+        env = patch.dict(os.environ, {'LOCATOOL_AUTH_ENABLED': 'true',
                                       'TRANSLATION_RESOURCE_CACHE_SECONDS': '300',
                                       'LOCATOOL_STORAGE': self.temp.name})
         env.start()
         self.addCleanup(env.stop)
         self.app = create_app({'TESTING': True, 'SECRET_KEY': 'test',
-                               'STORAGE_ROOT': self.temp.name, 'AUTH_ENABLED': False})
+                               'STORAGE_ROOT': self.temp.name, 'AUTH_ENABLED': True})
         self.client = self.app.test_client()
-        self.client.get('/projects/tarbi3a_baloot')
+        self.client.get('/login')
+        expiry = time.time() + 3600
+        claims = base64.urlsafe_b64encode(json.dumps({'exp': expiry}).encode()).decode().rstrip('=')
         with self.client.session_transaction() as session:
+            session['sid'] = self.app.extensions['sessions'].create(
+                'member', 'member@example.invalid', f'header.{claims}.signature', 'refresh', expiry)
             self.headers = {'X-CSRF-Token': session['csrf']}
+        self.enterContext(patch('translation_app.web.api.engine'))
+        self.enterContext(patch('translation_app.web.api.read_prompts', return_value={
+            'system': {'content': 'Translate', 'version': 1},
+            'instructions': {'content': '', 'version': 1},
+        }))
         self.engine = MagicMock()
 
         def table(name):
@@ -32,10 +44,14 @@ class KnowledgePreloadTests(unittest.TestCase):
             query.eq.return_value = query
             query.order.return_value = query
 
+            if name == 'knowledge_project_members':
+                query.limit.return_value = query
+                query.execute.return_value.data = [{'can_edit': True}]
+                return query
+
             def page(start, end):
-                items = ([{'source_term': '举报', 'target_term': 'إبلاغ', 'note': ''}]
-                         if name == 'glossaries' else
-                         [{'source_text': '举报', 'target_text': 'إبلاغ'}])
+                items = [{'kind': kind, 'source': '举报', 'target': 'إبلاغ', 'note': '',
+                          'scene': '', 'string_key': '', 'verified': False} for kind in ('terms', 'memory')]
                 query.execute.return_value.data = items if start == 0 else []
                 return query
 
@@ -91,8 +107,7 @@ class KnowledgePreloadTests(unittest.TestCase):
         self.create_database.assert_not_called()
 
     def test_authenticated_workspace_requires_login(self):
-        self.app.config['AUTH_ENABLED'] = True
-        response = self.preload()
+        response = self.app.test_client().get('/api/projects/tarbi3a_baloot/knowledge/terms/entries?language=arabic')
         self.assertEqual(response.status_code, 401)
         self.create_database.assert_not_called()
 

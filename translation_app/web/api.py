@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 import re
 import shutil
-import tempfile
 import time
 import uuid
 import zipfile
@@ -15,10 +14,14 @@ import zipfile
 from flask import Blueprint, current_app, g, jsonify, request, send_file, url_for
 from werkzeug.utils import secure_filename
 
+from translation_app.services.knowledge import (
+    FIELDS, MAX_IMPORT_ROWS, PAGE_SIZE, STATUSES, KnowledgeError, KnowledgeStore,
+    entry_refs, entry_status, entry_values, paste_rows,
+)
 from translation_app.services.projects import get_project, validate_selection
 from translation_app.services.prompt_editor import PromptConflict, PromptUnavailable, prompt_settings, read_prompts, save_prompt
 from translation_app.services.settings import translation_settings
-from translation_app.services.spreadsheets import has_mapped_rows, inspect_file
+from translation_app.services.spreadsheets import has_mapped_rows, inspect_file, read_knowledge_rows
 
 api = Blueprint('api', __name__, url_prefix='/api')
 
@@ -55,16 +58,6 @@ def engine():
     from translation_app.services.database import ProjectDatabase
     return ProjectDatabase(g.user['access_token'], allow_anonymous=not current_app.config['AUTH_ENABLED'],
                            storage_root=current_app.config['STORAGE_ROOT'])
-
-
-def scoped_project(project_id, language=None):
-    project = get_project(project_id)
-    if project['direct']:
-        raise ValueError('直接翻译不使用项目知识库')
-    if language is None:
-        return project
-    project, lang = validate_selection(project_id, language)
-    return project, lang['database_name']
 
 
 @api.post('/projects/<project_id>/knowledge/preload')
@@ -305,85 +298,153 @@ def manual_result(job_id):
     return jsonify(rows=rows)
 
 
-
-def valid_pairs(value):
-    if not isinstance(value, list) or len(value) > 10000:
-        raise ValueError('术语数据无效或过多')
-    result = []
-    for item in value:
-        if not isinstance(item, dict):
-            raise ValueError('术语数据无效')
-        source, target, note = (item.get(k, '') for k in ('source', 'target', 'note'))
-        if not all(isinstance(v, str) for v in (source, target, note)):
-            raise ValueError('术语数据无效')
-        if source.strip() and target.strip():
-            result.append({'source': source.strip(), 'target': target.strip(), 'note': note.strip()})
-    if not result:
-        raise ValueError('请至少填写一组源词和译文')
-    return result
+@api.errorhandler(KnowledgeError)
+def knowledge_error(error):
+    return jsonify(error=str(error)), error.status
 
 
-@api.post('/projects/<project_id>/glossary/check')
-def glossary_check(project_id):
+def knowledge_store(project_id, kind, language):
+    project, lang = validate_selection(project_id, language)
+    if project['direct']:
+        raise ValueError('直接翻译没有项目知识库。')
+    if not g.user['access_token']:
+        raise KnowledgeError('请登录有项目权限的账号后使用知识库。', 403)
+    return KnowledgeStore(engine(), project['database_id'].strip().lower(), lang['database_name'].strip().lower(), kind)
+
+
+def knowledge_filters():
+    query = request.args.get('q', '').strip()
+    scene = request.args.get('scene', '').strip()
+    status = request.args.get('status', 'current')
+    if len(query) > 300 or len(scene) > 200 or '\x00' in (query + scene) or status not in STATUSES | {'current'}:
+        raise ValueError('搜索或筛选条件无效。')
+    return query, scene, status
+
+
+@api.get('/projects/<project_id>/knowledge/<kind>/entries')
+def knowledge_entries(project_id, kind):
+    store = knowledge_store(project_id, kind, request.args.get('language'))
+    editable = store.require_access()
+    filters = knowledge_filters()
+    page = request.args.get('page', '1')
+    if not re.fullmatch(r'[1-9][0-9]{0,4}', page):
+        raise ValueError('页码无效。')
+    return jsonify(**store.listing(*filters, (int(page) - 1) * PAGE_SIZE), editable=editable, page_size=PAGE_SIZE)
+
+
+@api.get('/projects/<project_id>/knowledge/<kind>/export')
+def knowledge_export(project_id, kind):
+    from openpyxl import Workbook
+    from openpyxl.cell import WriteOnlyCell
+
+    store = knowledge_store(project_id, kind, request.args.get('language'))
+    store.require_access()
+    filters = knowledge_filters()
+    workbook = Workbook(write_only=True)
+    sheet = workbook.create_sheet('知识库')
+    if kind == 'memory':
+        sheet.append(['原文', '译文', '适用场景', '备注', '字符串 Key', '状态'])
+        fields = FIELDS
+    else:
+        sheet.append(['原文', '译文', '适用场景', '备注', '状态'])
+        fields = FIELDS[:-1]
+    names = {'active': '可用', 'pending': '待确认', 'archived': '已归档'}
+    offset = 0
+    while True:
+        result = store.listing(*filters, offset, 100)
+        for row in result['rows']:
+            cells = [WriteOnlyCell(sheet, value=value) for value in
+                     [*(row[field] for field in fields), names[row['status']]]]
+            # Preserve formula-looking strings as text, including on re-import.
+            for cell in cells:
+                cell.data_type = 's'
+            sheet.append(cells)
+        offset += len(result['rows'])
+        if offset >= result['total'] or not result['rows']:
+            break
+    output = io.BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name=f'{project_id}-{kind}.xlsx',
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+
+@api.post('/projects/<project_id>/knowledge/<kind>/entries')
+def knowledge_create(project_id, kind):
     data = payload()
-    project, lang = scoped_project(project_id, data.get('language'))
-    pairs = valid_pairs(data.get('pairs'))
-    db = engine()
-    # Do not use the legacy helper: it converts database errors to "no conflicts".
-    existing = []
-    sources = list(dict.fromkeys(p['source'] for p in pairs))
-    for start in range(0, len(sources), 100):
-        records = (db.client.table('glossaries').select('source_term,target_term,note')
-                   .eq('game_id', project['database_id'].lower().strip())
-                   .eq('target_language', lang.lower().strip())
-                   .in_('source_term', sources[start:start + 100]).execute().data or [])
-        existing.extend(records)
-    lookup = {x['source_term']: x for x in existing}
-    conflicts, clean = [], []
-    for pair in pairs:
-        old = lookup.get(pair['source'])
-        if old:
-            conflicts.append({'source': pair['source'], 'existing_target': old['target_term'], 'existing_note': old.get('note') or '', 'new_target': pair['target'], 'new_note': pair['note']})
-        else:
-            clean.append(pair)
-    return jsonify(conflicts=conflicts, clean_pairs=clean)
+    store = knowledge_store(project_id, kind, data.get('language'))
+    store.require_access(edit=True)
+    entry = entry_values(data.get('entry'), kind)
+    count = store.mutate('create', rows=[entry], status=entry_status(data.get('status', 'active')))
+    return jsonify(count=count), 201
 
 
-@api.post('/projects/<project_id>/glossary/save')
-def glossary_save(project_id):
+@api.patch('/projects/<project_id>/knowledge/<kind>/entries/<entry_id>')
+def knowledge_edit(project_id, kind, entry_id):
     data = payload()
-    project, lang = scoped_project(project_id, data.get('language'))
-    count = engine().upsert_terms(project['database_id'], lang, valid_pairs(data.get('pairs')))
-    return jsonify(count=count)
+    store = knowledge_store(project_id, kind, data.get('language'))
+    store.require_access(edit=True)
+    entry = entry_values(data.get('entry'), kind)
+    refs = entry_refs([{'id': entry_id, 'version': data.get('version')}])
+    return jsonify(count=store.mutate('edit', rows=[entry], refs=refs, status=entry_status(data.get('status'))))
 
 
-@api.post('/projects/<project_id>/knowledge/upload')
-def knowledge_upload(project_id):
-    project, lang = scoped_project(project_id, request.form.get('language'))
-    kind = request.form.get('kind')
-    if kind not in {'terms', 'translation_memory'}:
-        raise ValueError('知识库类型无效')
-    _, ext, raw = read_upload(request.files.get('file'))
-    # Validate the same workbook limits as translation before pandas loads it.
-    with tempfile.TemporaryDirectory(dir=current_app.config['STORAGE_ROOT']) as folder:
-        path = Path(folder) / ('input' + ext)
-        path.write_bytes(raw)
-        sheets = inspect_file(path)['sheets']
-    sheet_name = 'CSV_Sheet' if ext == '.csv' else (request.form.get('sheet') or sheets[0]['name'])
-    selected = next((sheet for sheet in sheets if sheet['name'] == sheet_name), None)
-    if not selected:
-        raise ValueError('选择的工作表不存在')
-    if selected['row_count'] > 10000:
-        raise ValueError('每次最多上传 10000 行')
-    import pandas as pd
-    frame = pd.read_csv(io.BytesIO(raw), dtype=str, keep_default_na=False) if ext == '.csv' else pd.read_excel(io.BytesIO(raw), sheet_name=sheet_name, dtype=str, keep_default_na=False)
-    frame.columns = [str(column).strip() for column in frame.columns]
-    source, target, note = (request.form.get(k) or '' for k in ('source', 'target', 'note'))
-    if source not in frame.columns or target not in frame.columns or (note and note not in frame.columns):
-        raise ValueError('选择的列不存在')
-    if len(frame) > 10000:
-        raise ValueError('每次最多上传 10000 行')
-    pairs = valid_pairs([{'source': str(row[source]), 'target': str(row[target]), 'note': str(row[note]) if note else ''} for _, row in frame.iterrows()])
-    db = engine()
-    count = db.upsert_terms(project['database_id'], lang, pairs) if kind == 'terms' else db.upsert_tm(project['database_id'], lang, pairs)
-    return jsonify(count=count)
+@api.post('/projects/<project_id>/knowledge/<kind>/bulk')
+def knowledge_bulk(project_id, kind):
+    data = payload()
+    store = knowledge_store(project_id, kind, data.get('language'))
+    store.require_access(edit=True)
+    change = data.get('action')
+    if change not in ('status', 'delete'):
+        raise ValueError('批量操作无效。')
+    refs = entry_refs(data.get('entries'))
+    status = entry_status(data.get('status')) if change == 'status' else 'active'
+    return jsonify(count=store.mutate(change, refs=refs, status=status))
+
+
+@api.post('/projects/<project_id>/knowledge/<kind>/import/preview')
+def knowledge_import_preview(project_id, kind):
+    data = payload()
+    store = knowledge_store(project_id, kind, data.get('language'))
+    store.require_access(edit=True)
+    if 'paste' in data:
+        origin, rows = 'paste', paste_rows(data['paste'])
+    else:
+        path, _ = upload_path(data.get('upload_id'))
+        mapping, sheet = data.get('mapping'), data.get('sheet')
+        if (not isinstance(mapping, dict) or not isinstance(sheet, str) or
+                any(key not in FIELDS or not isinstance(value, str) for key, value in mapping.items()) or
+                not mapping.get('source') or not mapping.get('target')):
+            raise ValueError('请选择有效的原文和译文列。')
+        origin, rows = 'file', read_knowledge_rows(path, sheet, mapping, MAX_IMPORT_ROWS)
+    try:
+        additions, preview = store.plan_import(rows)
+    except UnicodeDecodeError as exc:
+        raise ValueError('CSV 编码无效，请另存为 UTF-8。') from exc
+    plan_id = uuid.uuid4().hex if additions else None
+    if plan_id:
+        plan = {'scope': store.scope, 'origin': origin, 'created': time.time(), 'rows': additions}
+        path = upload_root() / f'knowledge-{plan_id}.json'
+        with path.open('x', encoding='utf-8') as output:
+            os.chmod(path, 0o600)
+            json.dump(plan, output, ensure_ascii=False)
+    return jsonify(**preview, plan_id=plan_id)
+
+
+@api.post('/projects/<project_id>/knowledge/<kind>/import')
+def knowledge_import(project_id, kind):
+    data = payload()
+    store = knowledge_store(project_id, kind, data.get('language'))
+    store.require_access(edit=True)
+    plan_id = data.get('plan_id')
+    if not isinstance(plan_id, str) or not re.fullmatch(r'[0-9a-f]{32}', plan_id):
+        raise ValueError('请重新预览导入内容。')
+    path = upload_root() / f'knowledge-{plan_id}.json'
+    try:
+        plan = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        raise ValueError('请重新预览导入内容。') from None
+    if plan['scope'] != store.scope or time.time() - plan['created'] > 3600:
+        raise ValueError('预览已过期或所属知识库已切换，请重新预览。')
+    count = store.mutate('import', rows=plan['rows'], status='pending', origin=plan['origin'])
+    return jsonify(count=count, skipped=len(plan['rows']) - count)

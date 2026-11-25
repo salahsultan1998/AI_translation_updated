@@ -2,7 +2,7 @@
 import io
 import tempfile
 import unittest
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 from openpyxl import Workbook, load_workbook
 
@@ -33,36 +33,6 @@ class FlaskWorkflowTests(unittest.TestCase):
             self.assertNotIn('id="profile"', page)
             self.assertNotIn('共享基础规则', page)
         database.get_game_profile.assert_not_called()
-
-    def test_glossary_check_conflicts_then_save_chosen_values(self):
-        database, query = MagicMock(), MagicMock()
-        database.client.table.return_value.select.return_value = query
-        query.eq.return_value = query
-        query.in_.return_value = query
-        query.execute.return_value.data = [{'source_term': '已有', 'target_term': 'قديم', 'note': '备注'}]
-        database.upsert_terms.return_value = 2
-        pairs = [{'source': '已有', 'target': 'جديد', 'note': '新'},
-                 {'source': '新词', 'target': 'مصطلح', 'note': ''}]
-        with patch('translation_app.web.api.engine', return_value=database):
-            checked = self.client.post('/api/projects/tarbi3a_baloot/glossary/check',
-                                       json={'language': 'arabic', 'pairs': pairs}, headers=self.headers)
-            self.assertEqual(checked.status_code, 200)
-            self.assertEqual(checked.get_json()['clean_pairs'], [pairs[1]])
-            self.assertEqual(checked.get_json()['conflicts'], [{'source': '已有', 'existing_target': 'قديم',
-                'existing_note': '备注', 'new_target': 'جديد', 'new_note': '新'}])
-            self.assertEqual(query.eq.call_args_list, [call('game_id', 'tarbi3a_baloot'), call('target_language', 'arabic')])
-            query.in_.assert_called_once_with('source_term', ['已有', '新词'])
-            database.upsert_terms.assert_not_called()
-
-            saved = self.client.post('/api/projects/tarbi3a_baloot/glossary/save',
-                                     json={'language': 'arabic', 'pairs': pairs}, headers=self.headers)
-            self.assertEqual(saved.status_code, 200)
-            self.assertEqual(saved.get_json()['count'], 2)
-            database.upsert_terms.assert_called_once_with('Tarbi3a_Baloot', 'Arabic', pairs)
-            unsupported = self.client.post('/api/projects/tarbi3a_baloot/glossary/check',
-                json={'language': 'english', 'pairs': pairs}, headers=self.headers)
-            self.assertEqual(unsupported.status_code, 400)
-            self.assertEqual(database.upsert_terms.call_count, 1)
 
     def test_multi_sheet_preview_submit_and_result_download(self):
         workbook = Workbook()
@@ -124,24 +94,6 @@ class FlaskWorkflowTests(unittest.TestCase):
         malformed = self.client.post('/api/jobs', data='not-json', content_type='application/json', headers=self.headers)
         self.assertEqual(malformed.status_code, 400)
         self.assertEqual(self.client.post('/api/uploads/preview', data={}).status_code, 403)
-
-    def test_reference_file_import_for_glossary_and_translation_memory(self):
-        database = MagicMock()
-        database.upsert_terms.return_value = 1
-        database.upsert_tm.return_value = 1
-        content = '原文,译文,备注\n你好,مرحبا,问候\n'.encode('utf-8')
-        pair = {'source': '你好', 'target': 'مرحبا', 'note': '问候'}
-        with patch('translation_app.web.api.engine', return_value=database):
-            for kind in ('terms', 'translation_memory'):
-                with self.subTest(kind=kind):
-                    form = {'file': (io.BytesIO(content), 'reference.csv'), 'kind': kind, 'language': 'arabic',
-                            'sheet': 'CSV_Sheet', 'source': '原文', 'target': '译文', 'note': '备注'}
-                    result = self.client.post('/api/projects/tarbi3a_baloot/knowledge/upload', data=form, headers=self.headers)
-                    self.assertEqual(result.status_code, 200, result.get_json())
-                    self.assertEqual(result.get_json()['count'], 1)
-        database.upsert_terms.assert_called_once_with('Tarbi3a_Baloot', 'Arabic', [pair])
-        database.upsert_tm.assert_called_once_with('Tarbi3a_Baloot', 'Arabic', [pair])
-
 
 if __name__ == '__main__':
     unittest.main()

@@ -101,31 +101,6 @@ class WebWorkflowTests(unittest.TestCase):
         other_upload = other.post('/api/jobs', json=request, headers={'X-CSRF-Token': other_csrf})
         self.assertEqual(other_upload.status_code, 400)
 
-    def test_glossary_conflict_lookup_errors_do_not_allow_save(self):
-        csrf = self.login()
-        db = unittest.mock.MagicMock()
-        db.client.table.side_effect = RuntimeError('database failed')
-        with patch('translation_app.web.api.engine', return_value=db):
-            result = self.client.post('/api/projects/sawa/glossary/check',
-                                      json={'language': 'arabic', 'pairs': [{'source': 'a', 'target': 'b'}]},
-                                      headers={'X-CSRF-Token': csrf})
-        self.assertEqual(result.status_code, 500)
-        self.assertNotIn('database failed', result.text)
-        db.upsert_terms.assert_not_called()
-
-    def test_knowledge_upload_uses_project_and_language_database_ids(self):
-        csrf = self.login()
-        db = unittest.mock.MagicMock()
-        db.upsert_tm.return_value = 1
-        form = {'file': (io.BytesIO('source,target\n你好,مرحبا\n'.encode()), 'terms.csv'),
-                'language': 'arabic', 'kind': 'translation_memory', 'sheet': 'CSV_Sheet',
-                'source': 'source', 'target': 'target', 'note': ''}
-        with patch('translation_app.web.api.engine', return_value=db):
-            response = self.client.post('/api/projects/sawa/knowledge/upload', data=form,
-                                        headers={'X-CSRF-Token': csrf})
-        self.assertEqual(response.status_code, 200, response.get_json())
-        db.upsert_tm.assert_called_once_with('sawa', 'Arabic', [{'source': '你好', 'target': 'مرحبا', 'note': ''}])
-
     def test_logout_invalidates_session(self):
         csrf = self.login()
         self.assertEqual(self.client.post('/logout', data={'csrf_token': csrf}).status_code, 302)
@@ -199,25 +174,22 @@ class DevelopmentModeTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/jobs/' + job['id']).status_code, 404)
         self.assertEqual(other.get('/api/jobs/' + other_job['id']).status_code, 200)
 
-    def test_project_job_loads_anonymous_context_when_disabled(self):
+    def test_project_job_cannot_use_anonymous_knowledge_when_login_disabled(self):
         self.client.get('/projects')
         payload = {'project_id': 's06', 'language': 'english',
                    'manual_rows': [{'source_text': '你好', 'context': ''}]}
         created = self.client.post('/api/jobs', json=payload, headers={'X-CSRF-Token': self.csrf(self.client)})
         self.assertEqual(created.status_code, 202)
         job_id = created.get_json()['id']
-        database = unittest.mock.MagicMock()
-        query = database.client.table.return_value.select.return_value.eq.return_value.eq.return_value.order.return_value.range.return_value.execute.return_value
-        query.data = []
-        database.get_game_profile.return_value = ''
         def translator(*args):
-            return translate_file(*args, provider=lambda rows, *_: [
-                {'row_id': row[0], 'translated_text': 'Hello'} for row in rows])
+            return translate_file(*args, provider=lambda *_: self.fail('anonymous job reached the model'))
         with patch.dict('os.environ', {'LOCATOOL_AUTH_ENABLED': 'false'}), \
-             patch('translation_app.services.database.ProjectDatabase', return_value=database) as database_class:
+             patch('translation_app.services.database.ProjectDatabase') as database_class:
             self.assertTrue(process_one(self.app.extensions['jobs'], translator))
-        database_class.assert_called_once_with(None, allow_anonymous=True)
-        self.assertEqual(self.client.get('/api/jobs/' + job_id).get_json()['status'], 'completed')
+        database_class.assert_not_called()
+        result = self.client.get('/api/jobs/' + job_id).get_json()
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('请登录有项目权限', result['message'])
 
 
 if __name__ == '__main__':

@@ -145,7 +145,7 @@ def load_resources(project, language, settings):
     game = project['database_id'].lower().strip()
     lang = language['database_name'].lower().strip()
     path = _version_path(game, settings)
-    scope = (str(path), lang, anonymous, _fingerprint(token or ''), 'repo-prompt-pairs')
+    scope = (str(path), lang, anonymous, _fingerprint(token or ''), 'knowledge-v2')
     disk_key = _fingerprint(json.dumps(scope))
     if not ttl:
         with _LOCK:
@@ -200,7 +200,10 @@ def load_resources(project, language, settings):
 def preload_resources(project, language, settings):
     started = time.perf_counter()
     terms, memory, _ = load_resources(project, language, settings)
-    result = {'terms': len(terms), 'memory': len(memory),
+    def count(entries):
+        return sum(len(rows) if isinstance(rows, list) else 1 for rows in entries.values())
+
+    result = {'terms': count(terms), 'memory': count(memory),
               'expires_in': max(0, settings.get('_resource_expires_at', 0) - time.time()),
               'seconds': round(time.perf_counter() - started, 4)}
     logging.getLogger(__name__).info('Knowledge preload completed: project=%s language=%s %s',
@@ -210,27 +213,27 @@ def preload_resources(project, language, settings):
 
 def _fetch_resources(game, lang, token, anonymous, settings):
     from .database import ProjectDatabase
+    from .knowledge import KnowledgeError, access
+    if anonymous and not token:
+        raise KnowledgeError('请登录有项目权限的账号后使用知识库。', 403)
     # Each miss uses a fresh client; mutable authentication is never shared.
     engine = ProjectDatabase(token, allow_anonymous=anonymous)
+    access(engine.client, game)
 
-    def fetch_all(table, columns, order):
-        rows, offset, page_size = [], 0, 1000
-        while True:
-            check_cancelled(settings)
-            response = (engine.client.table(table).select(columns).eq('game_id', game)
-                        .eq('target_language', lang).order(order)
-                        .range(offset, offset + page_size - 1).execute())
-            page = response.data or []
-            if not page:
-                return rows
-            rows.extend(page)
-            # The server may cap pages below 1000: only an empty page ends the scan.
-            offset += len(page)
-
-    glossary = fetch_all('glossaries', 'source_term,target_term,note', 'source_term')
-    memory = fetch_all('translation_memory', 'source_text,target_text', 'source_text')
-    snapshot = ({row['source_term']: {'target': row['target_term'], 'note': row.get('note') or ''}
-                 for row in glossary},
-                {row['source_text']: row['target_text'] for row in memory},
-                '')
-    return snapshot
+    terms, memory = {}, {}
+    offset, page_size = 0, 1000
+    while True:
+        check_cancelled(settings)
+        response = (engine.client.table('knowledge_entries')
+                    .select('id,kind,source,target,note,scene,string_key,verified')
+                    .eq('game_id', game).eq('target_language', lang).eq('status', 'active')
+                    .order('id').range(offset, offset + page_size - 1).execute())
+        page = response.data or []
+        if not page:
+            return terms, memory, ''
+        for row in page:
+            entries = terms if row['kind'] == 'terms' else memory
+            entries.setdefault(row['source'], []).append({key: row[key] for key in
+                                                          ('target', 'note', 'scene', 'string_key', 'verified')})
+        # The server may cap pages below 1000: only an empty page ends the scan.
+        offset += len(page)

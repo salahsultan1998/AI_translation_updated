@@ -26,33 +26,3 @@ class ProjectDatabase:
                 on_conflict='game_id').execute()
         finally:
             invalidate_resources(project_id, storage_root=self.storage_root)
-
-    def upsert_terms(self, project_id, language, pairs):
-        rows = {}
-        for pair in pairs:
-            rows[pair['source']] = {'game_id': project_id.lower().strip(),
-                'target_language': language.lower().strip(), 'source_term': pair['source'],
-                'target_term': pair['target'], 'note': pair.get('note', '')}
-        return self._upsert('glossaries', list(rows.values()), 'game_id,target_language,source_term', 1000)
-
-    def upsert_tm(self, project_id, language, pairs):
-        rows = {}
-        for pair in pairs:
-            rows[pair['source']] = {'game_id': project_id.lower().strip(),
-                'target_language': language.lower().strip(), 'source_text': pair['source'],
-                'target_text': pair['target']}
-        return self._upsert('translation_memory', list(rows.values()), 'game_id,target_language,source_hash', 500)
-
-    def _upsert(self, table, rows, conflict, batch_size):
-        from .resources import invalidate_resources
-        count = 0
-        try:
-            for start in range(0, len(rows), batch_size):
-                batch = rows[start:start + batch_size]
-                self.client.table(table).upsert(batch, on_conflict=conflict).execute()
-                count += len(batch)
-        finally:
-            if rows:
-                # A later batch may fail after earlier batches have committed.
-                invalidate_resources(rows[0]['game_id'], storage_root=self.storage_root)
-        return count
