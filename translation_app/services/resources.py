@@ -130,11 +130,11 @@ def _remember(key, expires, snapshot):
             _CACHE.popitem(last=False)
 
 
-def load_resources(project, language, settings):
+def _load_rows(project, language, settings, *, client=None, refresh=False):
     check_cancelled(settings)
     settings['_resource_expires_at'] = 0
     if project['direct']:
-        return {}, {}, ''
+        return []
     from translation_app.auth_config import auth_enabled
 
     token = settings.get('access_token')
@@ -145,12 +145,12 @@ def load_resources(project, language, settings):
     game = project['database_id'].lower().strip()
     lang = language['database_name'].lower().strip()
     path = _version_path(game, settings)
-    scope = (str(path), lang, anonymous, _fingerprint(token or ''), 'knowledge-v2')
+    scope = (str(path), lang, anonymous, _fingerprint(token or ''), 'knowledge-v3')
     disk_key = _fingerprint(json.dumps(scope))
     if not ttl:
         with _LOCK:
             _CACHE.clear()
-        return _fetch_resources(game, lang, token, anonymous, settings)
+        return _fetch_rows(game, lang, token, anonymous, settings, client)
 
     # A per-scope lock coalesces page preload and worker requests, also across
     # processes. Other projects/languages/auth scopes can load independently.
@@ -162,17 +162,19 @@ def load_resources(project, language, settings):
             for old_key in [k for k, (expires, _) in _CACHE.items() if expires <= now]:
                 del _CACHE[old_key]
             cached = _CACHE.get(key)
-            if cached:
+            if cached and not refresh:
                 _CACHE.move_to_end(key)
                 settings['_resource_expires_at'] = cached[0]
                 logging.getLogger(__name__).info('Knowledge cache hit: memory')
                 return deepcopy(cached[1])
-        with _disk_cache(path) as db:
-            row = db.execute('SELECT version, expires, data FROM snapshots WHERE key=?', (disk_key,)).fetchone()
+        row = None
+        if not refresh:
+            with _disk_cache(path) as db:
+                row = db.execute('SELECT version, expires, data FROM snapshots WHERE key=?', (disk_key,)).fetchone()
         if row and row[0] == version and row[1] > now:
             try:
-                snapshot = tuple(json.loads(row[2]))
-                if len(snapshot) != 3 or not isinstance(snapshot[0], dict) or not isinstance(snapshot[1], dict):
+                snapshot = json.loads(row[2])
+                if not isinstance(snapshot, list):
                     raise ValueError('Invalid snapshot')
             except (ValueError, TypeError):
                 pass  # A damaged cache is reloaded from the authoritative source.
@@ -182,7 +184,7 @@ def load_resources(project, language, settings):
                 logging.getLogger(__name__).info('Knowledge cache hit: shared disk')
                 return deepcopy(snapshot)
         logging.getLogger(__name__).info('Knowledge cache miss: loading Supabase')
-        snapshot = _fetch_resources(game, lang, token, anonymous, settings)
+        snapshot = _fetch_rows(game, lang, token, anonymous, settings, client)
         # Edits during a load must never publish a mixed snapshot for later jobs.
         if _version(path) == version:
             expires = now + ttl
@@ -197,43 +199,64 @@ def load_resources(project, language, settings):
         return snapshot
 
 
-def preload_resources(project, language, settings):
-    started = time.perf_counter()
-    terms, memory, _ = load_resources(project, language, settings)
-    def count(entries):
-        return sum(len(rows) if isinstance(rows, list) else 1 for rows in entries.values())
+def load_resources(project, language, settings):
+    entries = {'terms': {}, 'memory': {}}
+    for row in _load_rows(project, language, settings):
+        if row['status'] == 'active':
+            entries[row['kind']].setdefault(row['source'], []).append({key: row[key] for key in
+                                                                       ('target', 'note', 'scene', 'string_key', 'verified')})
+    return entries['terms'], entries['memory'], ''
 
-    result = {'terms': count(terms), 'memory': count(memory),
+
+def preload_resources(project, language, settings, *, include_lists=False, refresh=False):
+    started = time.perf_counter()
+    client = None
+    if include_lists:
+        from .database import ProjectDatabase
+        from .knowledge import KnowledgeError, PAGE_SIZE, access
+        token = settings.get('access_token')
+        if not token:
+            raise KnowledgeError('请登录有项目权限的账号后使用知识库。', 403)
+        client = ProjectDatabase(token).client
+        # Management reads must recheck membership even on a shared cache hit.
+        editable = access(client, project['database_id'].lower().strip())
+    rows = _load_rows(project, language, settings, client=client, refresh=refresh)
+    counts = {'terms': 0, 'memory': 0}
+    libraries = {'terms': [], 'memory': []} if include_lists else None
+    for row in rows:
+        if row['status'] == 'active':
+            counts[row['kind']] += 1
+        if libraries is not None:
+            libraries[row['kind']].append(row)
+    result = {**counts,
               'expires_in': max(0, settings.get('_resource_expires_at', 0) - time.time()),
               'seconds': round(time.perf_counter() - started, 4)}
     logging.getLogger(__name__).info('Knowledge preload completed: project=%s language=%s %s',
                                    project['id'], language['id'], result)
+    if include_lists:
+        result.update(libraries=libraries, editable=editable, page_size=PAGE_SIZE)
     return result
 
 
-def _fetch_resources(game, lang, token, anonymous, settings):
-    from .database import ProjectDatabase
-    from .knowledge import KnowledgeError, access
-    if anonymous and not token:
-        raise KnowledgeError('请登录有项目权限的账号后使用知识库。', 403)
-    # Each miss uses a fresh client; mutable authentication is never shared.
-    engine = ProjectDatabase(token, allow_anonymous=anonymous)
-    access(engine.client, game)
+def _fetch_rows(game, lang, token, anonymous, settings, client=None):
+    if client is None:
+        from .database import ProjectDatabase
+        from .knowledge import KnowledgeError, access
+        if anonymous and not token:
+            raise KnowledgeError('请登录有项目权限的账号后使用知识库。', 403)
+        client = ProjectDatabase(token, allow_anonymous=anonymous).client
+        access(client, game)
 
-    terms, memory = {}, {}
-    offset, page_size = 0, 1000
+    rows, page_size = [], 1000
     while True:
         check_cancelled(settings)
-        response = (engine.client.table('knowledge_entries')
-                    .select('id,kind,source,target,note,scene,string_key,verified')
-                    .eq('game_id', game).eq('target_language', lang).eq('status', 'active')
+        offset = len(rows)
+        response = (client.table('knowledge_entries')
+                    .select('id,kind,source,target,note,scene,string_key,status,origin,verified,version,updated_at')
+                    .eq('game_id', game).eq('target_language', lang)
                     .order('id').range(offset, offset + page_size - 1).execute())
         page = response.data or []
         if not page:
-            return terms, memory, ''
-        for row in page:
-            entries = terms if row['kind'] == 'terms' else memory
-            entries.setdefault(row['source'], []).append({key: row[key] for key in
-                                                          ('target', 'note', 'scene', 'string_key', 'verified')})
+            return rows
         # The server may cap pages below 1000: only an empty page ends the scan.
-        offset += len(page)
+        rows.extend(page)

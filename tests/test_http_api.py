@@ -45,7 +45,8 @@ class TranslationApiTests(unittest.TestCase):
         self.prompts = {'system': {'content': 'Old prompt', 'version': 1},
                         'instructions': {'content': 'Project instructions', 'version': 1}}
         self.term = {'id': '20000000-0000-0000-0000-000000000001', 'kind': 'terms',
-                     'source': '领取', 'target': 'Claim', 'note': '', 'scene': '', 'string_key': '', 'verified': False}
+                     'source': '领取', 'target': 'Claim', 'note': '', 'scene': '', 'string_key': '', 'verified': False,
+                     'status': 'active'}
         self.reference_reads = 0
         self.glossary_member = [{'can_edit': True}]
         self.api = self.enterContext(TestClient(http_api.app))
@@ -83,7 +84,8 @@ class TranslationApiTests(unittest.TestCase):
             self.term.update(data['p_rows'][0])
             return httpx.Response(200, json=1)
         self.assertEqual(path, '/knowledge_entries')
-        self.assertEqual(request.url.params['status'], 'eq.active')
+        if 'kind' in request.url.params:
+            self.assertEqual(request.url.params['status'], 'eq.active')
         if request.url.params.get('kind') == 'eq.memory':
             self.assertEqual(request.url.params['game_id'], 'eq.s06')
             self.assertEqual(request.url.params['target_language'], 'eq.english')

@@ -62,13 +62,15 @@ def engine():
 
 @api.post('/projects/<project_id>/knowledge/preload')
 def preload_knowledge(project_id):
-    project, language = validate_selection(project_id, payload().get('language'))
+    data = payload()
+    project, language = validate_selection(project_id, data.get('language'))
     if project['direct']:
         raise ValueError('直接翻译不使用项目知识库')
     from translation_app.services.resources import preload_resources
     settings = {'access_token': g.user['access_token'],
                 '_limiter_root': str(current_app.extensions['jobs'].root / 'provider-slots')}
-    return jsonify(preload_resources(project, language, settings))
+    return jsonify(preload_resources(project, language, settings, include_lists=data.get('include_lists') is True,
+                                     refresh=data.get('refresh') is True))
 
 
 def upload_root():

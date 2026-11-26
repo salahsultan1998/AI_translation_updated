@@ -16,12 +16,11 @@
     return item;
   };
 
-  window.createKnowledgeLibrary = ({ panel, projectId, language, request, changed }) => {
+  window.createKnowledgeLibrary = ({ panel, projectId, language, request, snapshot, changed }) => {
     const $ = id => document.getElementById('kb-' + id);
     const tabs = [...panel.querySelectorAll('[data-kind]')];
     const form = $('form');
     const selected = new Map();
-    const snapshots = new Map();
     const state = { kind: 'terms', language: language.value, page: 1, pages: 1, rows: [],
       editable: false, loading: false, sequence: 0, writing: false, reading: false };
     let noticeTimer, editing, importFile, plan, importMode, importSequence = 0;
@@ -118,37 +117,19 @@
       syncSelection();
     }
 
-    function knowledgeSnapshot(kind) {
-      if (snapshots.has(kind)) return snapshots.get(kind);
-      const url = `/api/projects/${encodeURIComponent(projectId)}/knowledge/${kind}/snapshot`;
-      const pending = request(url + '?' + new URLSearchParams({ language: state.language })).then(result => {
-        result.rows.sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at) || a.id.localeCompare(b.id));
-        result.scenes = [...new Set(result.rows.map(row => row.scene).filter(Boolean))].sort();
-        return result;
-      }).catch(error => {
-        if (snapshots.get(kind) === pending) snapshots.delete(kind);
-        throw error;
-      });
-      snapshots.set(kind, pending);
-      return pending;
-    }
-
-    function prefetchGlossary() {
-      knowledgeSnapshot('terms').catch(() => {});
-    }
-
     async function snapshotPage(kind, search) {
-      const snapshot = await knowledgeSnapshot(kind);
+      const { libraries, editable, page_size } = await snapshot(search.get('language'));
+      const { rows, scenes } = libraries[kind];
       const status = search.get('status');
       const scene = search.get('scene');
       const query = (search.get('q') || '').trim().toLowerCase();
-      const matching = snapshot.rows.filter(row =>
+      const matching = rows.filter(row =>
         (status === 'current' ? row.status !== 'archived' : row.status === status) &&
         (!scene || row.scene === scene) &&
         (!query || row.source.toLowerCase().includes(query) || row.target.toLowerCase().includes(query) ||
           (kind === 'memory' && row.string_key.toLowerCase().includes(query))));
-      const start = (Number(search.get('page')) - 1) * snapshot.page_size;
-      return { ...snapshot, rows: matching.slice(start, start + snapshot.page_size), total: matching.length };
+      const start = (Number(search.get('page')) - 1) * page_size;
+      return { editable, page_size, scenes, rows: matching.slice(start, start + page_size), total: matching.length };
     }
 
     async function load() {
@@ -220,7 +201,6 @@
     }
 
     function setScope(kind) {
-      if (state.language !== language.value) snapshots.clear();
       state.kind = kind;
       state.language = language.value;
       state.editable = false;
@@ -244,7 +224,6 @@
       $('new').textContent = '新增' + info.item;
       message();
       resetFilters();
-      prefetchGlossary();
       if (!panel.hidden) load();
     }
 
@@ -274,7 +253,6 @@
       if (state.writing || state.loading || !state.editable) return;
       const scope = path();
       const activeLanguage = state.language;
-      const kind = state.kind;
       const inScope = () => scope === path() && activeLanguage === state.language;
       state.writing = true;
       syncSelection();
@@ -284,18 +262,17 @@
       if (dialog) dialogMessage(dialog);
       try {
         const result = await request(path(part), { method, body: { language: activeLanguage, ...body } });
-        if (activeLanguage === state.language) snapshots.delete(kind);
-        if (result.count) changed();
+        if (result.count) changed(activeLanguage);
         if (!inScope()) return;
         if (dialog) dialog.close();
         selected.clear();
         message(success(result));
         await load();
       } catch (error) {
-        if (activeLanguage === state.language) snapshots.delete(kind);
         if (!inScope()) return;
         if (error.status === 409 || error.status === 403) {
           selected.clear();
+          changed(activeLanguage, true);
           await load();
         }
         if (dialog) dialogMessage(dialog, error.message);
@@ -470,7 +447,7 @@
     });
     for (const id of ['scenes', 'filter']) $(id).addEventListener('change', () => { resetFilters(); load(); });
     $('retry').addEventListener('click', () => {
-      snapshots.delete(state.kind);
+      changed(state.language, true);
       message();
       load();
     });
@@ -546,15 +523,14 @@
     });
     importDialog.addEventListener('close', resetPreview);
 
-    window.addEventListener('pagehide', () => { snapshots.clear(); state.sequence++; });
+    window.addEventListener('pagehide', () => { state.sequence++; });
     window.addEventListener('pageshow', event => {
       if (!event.persisted) return;
-      prefetchGlossary();
+      snapshot(state.language).catch(() => {});
       if (!panel.hidden) load();
     });
 
     return {
-      prefetchGlossary,
       open() {
         if (state.language !== language.value) setScope(state.kind);
         else {

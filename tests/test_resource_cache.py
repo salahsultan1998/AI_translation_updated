@@ -52,7 +52,7 @@ class ResourceCacheTests(unittest.TestCase):
 
                 def page(start, end):
                     self.requests.append((name, start, end))
-                    metadata = {'note': '', 'scene': '', 'string_key': '', 'verified': False}
+                    metadata = {'note': '', 'scene': '', 'string_key': '', 'verified': False, 'status': 'active'}
                     data = [{'kind': 'terms', 'source': '英雄', 'target': self.term, **metadata},
                             {'kind': 'memory', 'source': '你好', 'target': 'Hello', **metadata}]
                     # Deliberately cap below page size to exercise pagination.

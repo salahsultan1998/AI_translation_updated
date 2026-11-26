@@ -13,23 +13,23 @@
   $('job-status').appendChild(workerHint);
   const resourcePreloads = new Map();
   const library = isDirect ? null : window.createKnowledgeLibrary({
-    panel: $('knowledge-panel'), projectId, language: $('language'), request, changed: refreshKnowledge
+    panel: $('knowledge-panel'), projectId, language: $('language'), request,
+    snapshot: preloadResources, changed: refreshKnowledge
   });
   const knowledgeStatus = $('knowledge-status');
-  function preloadResources(language) {
+  function preloadResources(language, refresh = false) {
     const existing = resourcePreloads.get(language);
-    if (existing && existing.expires > Date.now()) {
-      if (existing.result && $('language').value === language) showKnowledgeStatus(existing.result);
-      return existing.promise;
-    }
-    const entry = {expires: Infinity};
+    if (existing) return existing.promise;
+    const entry = {};
     resourcePreloads.set(language, entry);
     if ($('language').value === language) knowledgeStatus.textContent = '正在加载项目知识库…';
     entry.promise = request(`/api/projects/${encodeURIComponent(projectId)}/knowledge/preload`, {
-      method: 'POST', body: {language}
+      method: 'POST', body: {language, include_lists: true, refresh}
     }).then(result => {
-      entry.expires = Date.now() + result.expires_in * 1000;
-      entry.result = result;
+      for (const [kind, rows] of Object.entries(result.libraries)) {
+        rows.sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at) || a.id.localeCompare(b.id));
+        result.libraries[kind] = { rows, scenes: [...new Set(rows.map(row => row.scene).filter(Boolean))].sort() };
+      }
       if ($('language').value === language && resourcePreloads.get(language) === entry) {
         showKnowledgeStatus(result);
       }
@@ -48,9 +48,9 @@
       ? `知识库已就绪 · ${result.terms} 条术语 · ${result.memory} 条翻译记忆`
       : '知识库已加载，但缓存未启用，翻译时会重新加载。';
   }
-  function refreshKnowledge() {
-    resourcePreloads.clear();
-    preloadResources($('language').value).catch(() => {});
+  function refreshKnowledge(language, refresh = false) {
+    resourcePreloads.delete(language);
+    if ($('language').value === language) preloadResources(language, refresh).catch(() => {});
   }
 
   function showError(message) { $('error').textContent = message; $('error').hidden = false; $('notice').hidden = true; }
@@ -157,9 +157,11 @@
     if (!$('config-panel').hidden && promptsDirty() && !window.confirm('提示词有未保存的修改，确定切换语言吗？')) {
       $('language').value = promptLanguage; event.stopImmediatePropagation(); return;
     }
+    if (promptLanguage !== $('language').value) resourcePreloads.clear();
     promptLanguage = $('language').value;
     if (!$('config-panel').hidden) loadPrompts();
     library?.languageChanged();
+    if (library) preloadResources(promptLanguage).catch(() => {});
   });
   window.addEventListener('beforeunload', event => { if (promptsDirty()) { event.preventDefault(); event.returnValue = ''; } });
   document.querySelectorAll('[data-input]').forEach(button => button.addEventListener('click', () => {
@@ -332,6 +334,7 @@
   }
   clearPreviousJobs();
   window.addEventListener('pagehide', () => {
+    resourcePreloads.clear();
     fetch('/api/jobs/clear', {
       method: 'POST', credentials: 'same-origin', keepalive: true,
       headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf},
@@ -349,10 +352,5 @@
     previousLanguageName = current;
   });
   if (isDirect) return;
-  library.prefetchGlossary();
   preloadResources($('language').value).catch(() => {});
-  $('language').addEventListener('change', () => {
-    knowledgeStatus.textContent = '正在加载项目知识库…';
-    preloadResources($('language').value).catch(() => {});
-  });
 })();
