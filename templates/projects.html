@@ -1,8 +1,13 @@
 {% extends "base.html" %}
+{% block app_bar %}{% endblock %}
 {% block content %}
 <main class="projects" aria-labelledby="projects-title">
   <header class="home-heading">
-    <h1 class="title" id="projects-title">选择工作区</h1>
+    <div class="home-identity">
+      <img src="{{ url_for('static', filename='images/app-icon.svg') }}" alt="" width="40" height="40">
+      <h1 class="title" id="projects-title">AI 本地化工作台</h1>
+    </div>
+    {{ logout_form() }}
   </header>
   {% set direct = projects | selectattr('direct') | first %}
   <a class="direct-card" href="/direct" aria-labelledby="direct-title" aria-describedby="direct-description">

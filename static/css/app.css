@@ -107,8 +107,8 @@ button.secondary:enabled:hover, .button.secondary:hover { background: var(--rais
   min-height: 4.25rem;
 }
 
-.app-bar form { flex: none; }
-.app-bar .text-button { min-height: 2.75rem; font-size: .875rem; }
+.logout-form { flex: none; }
+.logout-form .text-button { min-height: 2.75rem; font-size: .875rem; }
 
 .brand {
   display: inline-flex;
@@ -161,8 +161,19 @@ button.secondary:enabled:hover, .button.secondary:hover { background: var(--rais
   white-space: nowrap;
 }
 
-.home-heading { margin-bottom: 1.5rem; }
-.home-heading .title { font-size: clamp(1.75rem, 5vw, 2.75rem); }
+.projects { padding-top: .75rem; }
+
+.home-heading, .home-identity {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  min-width: 0;
+}
+
+.home-heading { justify-content: space-between; min-height: 3rem; margin-bottom: 1.5rem; }
+.home-heading .title { font-size: clamp(1.25rem, 4.1vw, 2.125rem); line-height: 1.2; }
+.home-identity img { display: block; flex: none; }
+
 .game-section { margin-top: 1.5rem; }
 .game-section > h2 { margin: 0 0 .75rem; font-size: 1.0625rem; font-weight: 600; }
 .game-projects { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .75rem; }
@@ -521,6 +532,12 @@ textarea:not(.manual-cell-editor) {
 @media (max-width: 34rem) {
   :root { --page-gutter: 1rem; }
   .page { padding-block: 1.25rem 3rem; }
+  .projects { padding-top: .5rem; }
+  .home-heading { margin-bottom: 1.25rem; }
+  .home-heading .title { font-size: clamp(1.0625rem, 5vw, 1.5rem); }
+  .home-heading .logout-form .text-button { padding-inline: .25rem; }
+  .home-identity { gap: .5rem; }
+  .home-identity img { width: 2rem; height: 2rem; }
   .direct-card { padding: .75rem; }
   .project-card { min-height: 7.25rem; padding: .75rem; }
   .project-icon { width: 3.25rem; height: 3.25rem; border-radius: .75rem; }

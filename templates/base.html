@@ -1,3 +1,11 @@
+{% macro logout_form() %}
+  {% if auth_enabled and current_user_email is not none %}
+  <form class="logout-form" method="post" action="/logout">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="text-button compact" type="submit">退出登录</button>
+  </form>
+  {% endif %}
+{% endmacro -%}
 <!doctype html>
 <html lang="zh-CN">
 <head>
@@ -6,21 +14,18 @@
   <meta name="csrf-token" content="{{ csrf_token }}">
   <title>{% block title %}AI 本地化工作台{% endblock %}</title>
   <link rel="icon" href="{{ url_for('static', filename='images/app-icon.svg') }}" type="image/svg+xml">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css', v='localization-design-3') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css', v='localization-design-4') }}">
   {% block styles %}{% endblock %}
 </head>
 <body>
+  {% block app_bar %}
   <header class="app-bar">
     <div class="app-bar-inner">
       <a class="brand" href="/projects"><img src="{{ url_for('static', filename='images/app-icon.svg') }}" alt="" width="36" height="36">AI 本地化工作台</a>
-      {% if auth_enabled and current_user_email is not none %}
-      <form method="post" action="/logout">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button class="text-button compact" type="submit">退出登录</button>
-      </form>
-      {% endif %}
+      {{ logout_form() }}
     </div>
   </header>
+  {% endblock %}
   <div class="page">{% block content %}{% endblock %}</div>
   {% block scripts %}{% endblock %}
 </body>
