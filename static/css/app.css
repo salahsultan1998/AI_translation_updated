@@ -94,6 +94,8 @@ button.secondary:enabled:hover, .button.secondary:hover { background: var(--rais
   }
 }
 
+body:has(#workspace) { --page-width: clamp(74rem, 75vw, 112rem); }
+
 .app-bar-inner, .page {
   width: min(var(--page-width), calc(100% - 2 * var(--page-gutter)));
   margin-inline: auto;
@@ -512,7 +514,7 @@ textarea:not(.manual-cell-editor) {
 
 .login-layout { max-width: 27rem; margin: clamp(2rem, 8vh, 5rem) auto 0; }
 .login-panel { padding: 2rem; }
-.login-panel .title { font-size: 1.875rem; }
+.login-panel .title { display: flex; font-size: clamp(1.25rem, 5vw, 1.875rem); }
 .login-panel p { margin: .5rem 0 1.5rem; }
 .stack { display: grid; gap: 1rem; }
 .stack button { margin-top: .5rem; }

@@ -1,9 +1,14 @@
 {% extends "base.html" %}
 {% block title %}登录 · AI 本地化工作台{% endblock %}
+{% block app_bar %}{% endblock %}
 {% block content %}
 <main class="login-layout">
   <section class="panel login-panel" aria-labelledby="login-title">
-    <h1 id="login-title" class="title">登录工作台</h1><p class="muted">使用团队账号访问本地化项目</p>
+    <h1 id="login-title" class="title brand">
+      <img src="{{ url_for('static', filename='images/app-icon.svg') }}" alt="" width="36" height="36">
+      AI 本地化工作台
+    </h1>
+    <p class="muted">使用团队账号访问本地化项目</p>
     {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
     <form method="post" action="/login" class="stack">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
