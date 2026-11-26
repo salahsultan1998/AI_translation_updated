@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ project.name }} · AI 本地化工作台{% endblock %}
-{% block styles %}{% if not project.direct %}<link rel="stylesheet" href="{{ url_for('static', filename='css/knowledge.css', v='localization-design-1') }}">{% endif %}{% endblock %}
+{% block styles %}{% if not project.direct %}<link rel="stylesheet" href="{{ url_for('static', filename='css/knowledge.css', v='localization-design-2') }}">{% endif %}{% endblock %}
 {% block content %}
 <main id="workspace" data-project="{{ project.id }}" data-direct="{{ 'true' if project.direct else 'false' }}">
   <a class="back-link" href="/projects"><span class="chevron" aria-hidden="true"></span>所有工作区</a>
@@ -78,6 +78,6 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/manual-grid.js', v='term-grid-1') }}" defer></script>
-{% if not project.direct %}<script src="{{ url_for('static', filename='js/knowledge.js', v='knowledge-5') }}" defer></script>{% endif %}
+{% if not project.direct %}<script src="{{ url_for('static', filename='js/knowledge.js', v='knowledge-6') }}" defer></script>{% endif %}
 <script src="{{ url_for('static', filename='js/workspace.js', v='localization-design-2') }}" defer></script>
 {% endblock %}

@@ -345,18 +345,54 @@
       string_key: ['字符串 key', 'key', 'string_key']
     };
 
+    function updateFilePicker() {
+      const file = $('file').files[0];
+      $('file-field').dataset.selected = String(Boolean(file));
+      $('file-name').textContent = file?.name || libraries[state.kind].item + '文件';
+      $('file-action').textContent = file ? '更换文件' : '选择文件';
+      if (!file) {
+        $('file-info').textContent = '支持 CSV 和 XLSX';
+        return;
+      }
+      const format = file.name.match(/\.(csv|xlsx)$/i)?.[1].toUpperCase() || '文件';
+      let size = file.size;
+      let unit = 'B';
+      if (size >= 1024 ** 2) {
+        size /= 1024 ** 2;
+        unit = 'MB';
+      } else if (size >= 1024) {
+        size /= 1024;
+        unit = 'KB';
+      }
+      $('file-info').textContent = `${format} · ${size.toLocaleString('zh-CN', { maximumFractionDigits: 1 })} ${unit}`;
+    }
+
+    function syncImportActions() {
+      const fileMode = importMode === 'file';
+      const hasPreview = !$('preview-result').hidden;
+      $('paste-preview').hidden = fileMode;
+      $('preview').disabled = state.reading;
+      $('file-read').hidden = !fileMode || Boolean(importFile);
+      $('file-read').disabled = state.reading || !$('file').files.length;
+      $('file-read').textContent = state.reading ? '读取中…' : '读取文件';
+      $('file-preview').hidden = !fileMode || !importFile;
+      $('file-preview').disabled = state.reading;
+      $('file-preview').classList.toggle('secondary', hasPreview);
+      $('commit').hidden = fileMode && !hasPreview;
+      $('commit').disabled = state.reading || !plan;
+    }
+
     function resetPreview() {
       importSequence++;
       state.reading = false;
       plan = null;
       $('preview-result').hidden = true;
-      $('commit').disabled = true;
-      $('preview').disabled = importMode === 'file' && !importFile;
-      $('file-read').disabled = false;
+      syncImportActions();
       dialogMessage(importDialog);
     }
 
     function openImport(mode) {
+      if (state.writing) return;
       importMode = mode;
       importFile = null;
       $('import-title').textContent = (mode === 'paste' ? '批量粘贴' : '导入') + libraries[state.kind].item;
@@ -369,6 +405,7 @@
         : '从 Excel 粘贴：原文、译文、场景、备注';
       $('paste-text').value = '';
       $('file').value = '';
+      updateFilePicker();
       resetPreview();
       importDialog.showModal();
     }
@@ -391,8 +428,7 @@
       if (state.reading) return;
       const sequence = ++importSequence;
       state.reading = true;
-      $('preview').disabled = true;
-      $('file-read').disabled = true;
+      syncImportActions();
       dialogMessage(importDialog);
       try {
         const result = await call();
@@ -402,8 +438,7 @@
       } finally {
         if (sequence === importSequence) {
           state.reading = false;
-          $('preview').disabled = importMode === 'file' && !importFile;
-          $('file-read').disabled = false;
+          syncImportActions();
         }
       }
     }
@@ -428,7 +463,17 @@
       }));
       $('preview-result').hidden = false;
       plan = result.plan_id;
-      $('commit').disabled = !plan;
+    }
+
+    function previewImport() {
+      if (state.reading || (importMode === 'file' && !importFile)) return;
+      const fields = columns.filter(control => !control.closest('[hidden]'));
+      const source = importMode === 'paste'
+        ? { paste: $('paste-text').value }
+        : { upload_id: importFile.upload_id, sheet: $('sheet').value,
+          mapping: Object.fromEntries(fields.map(control => [control.dataset.mapping, control.value])) };
+      resetPreview();
+      previewRequest(() => request(path('import/preview'), { method: 'POST', body: { language: state.language, ...source } }), showPreview);
     }
 
     for (const [index, tab] of tabs.entries()) {
@@ -489,9 +534,11 @@
     $('file').addEventListener('change', () => {
       importFile = null;
       $('mapping').hidden = true;
+      updateFilePicker();
       resetPreview();
     });
     $('file-read').addEventListener('click', () => {
+      if (state.reading) return;
       const file = $('file').files[0];
       if (!file) { dialogMessage(importDialog, '请选择文件。'); return; }
       importFile = null;
@@ -504,19 +551,13 @@
         $('sheet').replaceChildren(...result.sheets.map(sheet => new Option(sheet.name, sheet.name)));
         $('mapping').hidden = false;
         mapSheet();
+        $('sheet').focus();
       });
     });
     $('sheet').addEventListener('change', mapSheet);
     for (const control of columns) control.addEventListener('change', resetPreview);
-    $('preview').addEventListener('click', () => {
-      const fields = columns.filter(control => !control.closest('[hidden]'));
-      const source = importMode === 'paste'
-        ? { paste: $('paste-text').value }
-        : { upload_id: importFile?.upload_id, sheet: $('sheet').value,
-          mapping: Object.fromEntries(fields.map(control => [control.dataset.mapping, control.value])) };
-      resetPreview();
-      previewRequest(() => request(path('import/preview'), { method: 'POST', body: { language: state.language, ...source } }), showPreview);
-    });
+    $('preview').addEventListener('click', previewImport);
+    $('file-preview').addEventListener('click', previewImport);
     $('commit').addEventListener('click', () => {
       if (plan) mutation('import', 'POST', { plan_id: plan }, result => `已新增 ${result.count} 条待确认记录` +
         (result.skipped ? ` · ${result.skipped} 条已存在，已保留原记录` : ''), importDialog);

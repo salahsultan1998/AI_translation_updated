@@ -50,7 +50,6 @@
 .knowledge-dialog-body :is(p,.fields,.notice) { margin:0; }
 .knowledge-dialog-body .fields { align-items:start; }
 .knowledge-dialog-body label { min-width:0; }
-.knowledge-dialog-body input[type=file] { max-width:100%; }
 .knowledge-dialog .knowledge-text-pair {
   height:168px;
   min-height:128px;
@@ -63,7 +62,16 @@
 }
 .knowledge-text-pair label { grid-template-rows:auto minmax(0,1fr); min-height:0; }
 .knowledge-dialog .knowledge-text-pair textarea { min-height:0; height:100%; resize:none; overflow:auto; }
-.knowledge-dialog-body #kb-file-field button { margin-top:8px; }
+#kb-import-dialog:has(.knowledge-file-picker:not([hidden])) .knowledge-dialog-heading { background:var(--surface); }
+.knowledge-dialog-body .knowledge-file-picker { min-height:5rem; padding:.75rem; }
+.knowledge-file-picker:focus-within:not(:has(input:focus-visible)) { outline:none; }
+.knowledge-file-picker[data-selected=true] { background:var(--surface); border-style:solid; }
+.knowledge-file-picker:not([data-selected=true]) .knowledge-spreadsheet-icon,
+.knowledge-file-picker[data-selected=true] .knowledge-upload-icon { display:none; }
+.knowledge-file-details { flex:1; min-width:0; }
+.knowledge-file-action { flex:none; white-space:nowrap; }
+.knowledge-file-picker:hover .knowledge-file-action { background:var(--raised); }
+.knowledge-dialog #kb-file-read:disabled { background:var(--hover); border-color:var(--border); color:var(--muted); opacity:1; }
 .knowledge-dialog .knowledge-danger { background:var(--danger); color:white; }
 .knowledge-dialog .knowledge-danger:enabled:hover { background:#87182f; }
 .knowledge-preview-list { list-style:none; margin:0; padding:0; }
@@ -90,6 +98,11 @@
     min-height:216px;
     max-height:min(500px,calc(100dvh - 160px));
   }
+}
+@media(max-width:25rem) {
+  .knowledge-dialog-body .knowledge-file-picker { gap:.5rem; padding:.5rem; }
+  .knowledge-file-picker .upload-symbol { width:2.125rem; height:2.125rem; }
+  .knowledge-file-picker .knowledge-file-action { padding-inline:.5rem; }
 }
 @media(pointer:coarse) {
   .knowledge-filters input[type=search],.knowledge-filters select,.knowledge-bulk select { min-height:2.75rem; }
