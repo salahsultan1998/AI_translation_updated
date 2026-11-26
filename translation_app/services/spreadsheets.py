@@ -111,7 +111,14 @@ def inspect_file(path):
         for sheet in book:
             _check_dimensions(sheet)
             rows = sheet.iter_rows(values_only=True)
-            columns = _headers(next(rows, ()))
+            first_row = next(rows, ())
+            try:
+                if not any(_display(value).strip() for value in first_row):
+                    if not any(any(_display(value).strip() for value in row) for row in rows):
+                        continue
+                columns = _headers(first_row)
+            except ValueError as exc:
+                raise ValueError(f'工作表「{sheet.title}」：{exc}') from exc
             preview, count = [], 0
             for row in rows:
                 count += 1
@@ -122,6 +129,8 @@ def inspect_file(path):
                 if count <= 10:
                     preview.append(_preview_row(columns, row))
             sheets.append({"name": sheet.title, "columns": [x for x in columns if x], "preview": preview, "row_count": count})
+        if not sheets:
+            raise ValueError("未找到带表头的工作表")
         return {"sheets": sheets}
     finally:
         book.close()
@@ -137,7 +146,24 @@ def _validate_mapping(headers, mapping):
         raise ValueError("上下文列不存在")
     if not isinstance(target, str) or not target.strip():
         raise ValueError("请指定目标列")
-    return headers.index(source), headers.index(context) if context else None, target.strip()
+    target = target.strip()
+    if "target_mode" in mapping:
+        if context == source:
+            raise ValueError("上下文列不能与原文列相同")
+        mode = mapping["target_mode"]
+        if mode == "new":
+            if target in headers:
+                raise ValueError("新列名称已存在，请改名或选择写入已有列")
+            if len(headers) >= MAX_COLUMNS:
+                raise ValueError(f"文件列数不可超过 {MAX_COLUMNS} 列")
+        elif mode == "existing":
+            if target not in headers:
+                raise ValueError("目标列不存在")
+            if target in (source, context):
+                raise ValueError("目标列不能与原文列或上下文列相同")
+        else:
+            raise ValueError("目标列写入方式无效")
+    return headers.index(source), headers.index(context) if context else None, target
 
 
 def has_mapped_rows(path, mappings):
@@ -169,7 +195,10 @@ def has_mapped_rows(path, mappings):
             _check_dimensions(book[name])
             rows = book[name].iter_rows(values_only=True)
             headers = _headers(next(rows, ()))
-            source_idx, _, _ = _validate_mapping(headers, mapping)
+            try:
+                source_idx, _, _ = _validate_mapping(headers, mapping)
+            except ValueError as exc:
+                raise ValueError(f'工作表「{name}」：{exc}') from exc
             if found:
                 continue
             for row in rows:

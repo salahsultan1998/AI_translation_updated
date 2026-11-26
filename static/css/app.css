@@ -376,11 +376,53 @@ textarea { resize: vertical; line-height: 1.6; }
 .file-picker strong { font-weight: 600; }
 .file-picker small { margin-top: .25rem; color: var(--muted); font-size: .75rem; font-weight: 400; }
 .upload-symbol { display: grid; flex: none; place-items: center; width: 2.5rem; height: 2.5rem; border-radius: .5rem; background: var(--selection); color: var(--accent); font-size: 1.25rem; }
+#translation-file-picker { min-width: 0; }
+#translation-file-picker[data-selected=true] { border-style: solid; background: var(--surface); }
+#translation-file-picker:focus-within:not(:has(input:focus-visible)) { outline: none; }
+#translation-file-picker:has(input:disabled), #translation-file-picker input:disabled { cursor: default; }
+.file-details { flex: 1; min-width: 0; }
+#file-action { flex: none; white-space: nowrap; }
+.file-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .5rem; }
+.file-error { color: var(--danger); }
 .sheet-config { margin-top: 1.5rem; }
-.sheet-card { padding-block: 1rem; border-top: 1px solid var(--border); }
-#sheet-list { margin-top: .75rem; }
-.sheet-title { margin-bottom: .75rem; }
+.sheet-config-heading, .sheet-title, .result-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .5rem 1rem;
+}
+.sheet-config-heading, .result-heading { justify-content: space-between; }
+.result-heading { align-items: flex-start; }
+.result-heading > div { min-width: 0; overflow-wrap: anywhere; }
+.sheet-card { margin-top: .75rem; }
+.sheet-title { margin-bottom: 1rem; }
 .sheet-title label { display: flex; align-items: center; gap: .5rem; }
+.sheet-title input { margin: 0; }
+.sheet-tabs {
+  display: flex;
+  gap: .25rem;
+  margin-top: .75rem;
+  padding: .25rem;
+  overflow-x: auto;
+  border-radius: .75rem;
+  background: var(--raised);
+}
+.sheet-tabs button { flex: 0 0 auto; white-space: nowrap; }
+.sheet-tabs button[aria-pressed=true] { border-color: var(--border); background: var(--surface); color: var(--accent); }
+.sheet-tabs button:focus-visible { outline-offset: -2px; }
+:is(#sheet-picker, #result-sheet-picker) > label { width: min(100%, 18rem); margin-top: .75rem; }
+.sheet-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 16rem));
+  align-items: start;
+  gap: .75rem 1rem;
+  margin-block: .75rem;
+}
+.sheet-target-group { display: grid; gap: .5rem; min-width: 0; }
+.sheet-fields select, .sheet-fields input.target-name { min-height: 2.5rem; padding: .375rem .625rem; }
+.sheet-fields p { margin: 0; }
+#sheet-problem { color: var(--danger); }
+#retry-result { margin-top: .75rem; }
 
 .fields { display: grid; gap: 1rem; margin-block: 1rem; }
 .fields.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -390,6 +432,8 @@ textarea { resize: vertical; line-height: 1.6; }
 table { width: 100%; border-collapse: collapse; font-size: .8125rem; text-align: start; }
 th, td { max-width: 22.5rem; padding: .5rem .75rem; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; }
 th { background: var(--raised); color: var(--secondary); font-weight: 500; text-align: start; white-space: nowrap; }
+.sheet-table-scroll table { border-collapse: separate; border-spacing: 0; }
+.sheet-table-scroll th { position: sticky; top: 0; z-index: 1; }
 
 .manual-actions {
   display: flex;
@@ -489,7 +533,6 @@ th { background: var(--raised); color: var(--secondary); font-weight: 500; text-
 .job-status { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); }
 .status-line { display: flex; justify-content: space-between; gap: .75rem; font-size: .8125rem; }
 progress { display: block; width: 100%; height: .5rem; margin: .75rem 0 1rem; }
-.result-sheet { margin-top: 1.25rem; }
 .clipboard-helper { position: fixed; left: -9999px; top: 0; }
 
 .prompt-heading { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
@@ -550,6 +593,8 @@ textarea:not(.manual-cell-editor) {
   .manual-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: .5rem; }
   .manual-actions #clear-manual { margin-inline-start: 0; }
   .file-row { align-items: stretch; flex-direction: column; }
+  #translation-file-picker { padding: .75rem; }
+  .sheet-fields { grid-template-columns: minmax(0, 1fr); }
   .fields.three, .fields.two { grid-template-columns: minmax(0, 1fr); }
   .login-panel { padding: 1.5rem; }
   input:not([type=file]):not([type=checkbox]), select, textarea { font-size: 1rem; }
@@ -563,6 +608,7 @@ textarea:not(.manual-cell-editor) {
 
 @media (pointer: coarse) {
   .compact, .button.compact, .direct-card .direct-action, .segmented button, .back-link { min-height: 2.75rem; }
+  .sheet-fields select, .sheet-fields input.target-name { min-height: 2.75rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

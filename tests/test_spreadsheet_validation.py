@@ -108,6 +108,21 @@ class MappedInputValidationTests(unittest.TestCase):
             'First': {'source': 'source', 'target': 'out'},
             'Second': {'source': 'text', 'target': 'out'}}))
 
+    def test_preview_skips_blank_sheet_and_identifies_bad_headers(self):
+        path = self.workbook([['source'], ['hello']], [])
+        self.assertEqual([sheet['name'] for sheet in inspect_file(path)['sheets']], ['First'])
+        with self.assertRaisesRegex(ValueError, '工作表「Second」.*重复列名'):
+            self.workbook([['source'], ['hello']], [['key', 'key'], ['a', 'b']])
+
+    def test_explicit_target_mode_protects_existing_columns(self):
+        path = self.workbook([['source', 'out'], ['hello', 'old']], [])
+        mapping = {'source': 'source', 'target': 'out', 'target_mode': 'new'}
+        with self.assertRaisesRegex(ValueError, '工作表「First」.*新列名称已存在'):
+            has_mapped_rows(path, {'First': mapping})
+        self.assertTrue(has_mapped_rows(path, {'First': {**mapping, 'target_mode': 'existing'}}))
+        with self.assertRaisesRegex(ValueError, '目标列不能与原文列'):
+            has_mapped_rows(path, {'First': {**mapping, 'target': 'source', 'target_mode': 'existing'}})
+
     def test_only_supported_file_types(self):
         with self.assertRaisesRegex(ValueError, '仅支持 CSV 和 XLSX'):
             has_mapped_rows(self.folder / 'input.xls', {'Sheet': {'source': 'source', 'target': 'out'}})

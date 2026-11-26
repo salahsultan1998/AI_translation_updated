@@ -83,11 +83,13 @@ class JobStore:
         # has arrived to perform the durable interruption update in claim().
         if status in {'running', 'cancelling'} and row['lease_until'] is not None and row['lease_until'] < time.time():
             status, message = 'interrupted', '处理已中断，可继续未完成的翻译。'
-        mapping = json.loads(row['mappings']).get('CSV_Sheet', {})
+        mappings = json.loads(row['mappings'])
+        mapping = mappings.get('CSV_Sheet', {})
         input_mode = 'manual' if isinstance(mapping, dict) and mapping.get('_manual_entry') is True else 'file'
         return {"id": row["id"], "project_id": row["project_id"],
                 "language": row["language"], "filename": row["filename"],
                 "input_mode": input_mode,
+                "selected_sheets": list(mappings),
                 "status": status, "completed": row["completed"],
                 "total": row["total"], "message": message,
                 "worker_online": worker_available,

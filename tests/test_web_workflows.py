@@ -174,6 +174,28 @@ class DevelopmentModeTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/jobs/' + job['id']).status_code, 404)
         self.assertEqual(other.get('/api/jobs/' + other_job['id']).status_code, 200)
 
+    def test_removing_upload_and_opening_another_workspace_preserve_other_uploads(self):
+        self.client.get('/projects')
+        headers = {'X-CSRF-Token': self.csrf(self.client)}
+        uploads = []
+        for name in ('first.csv', 'second.csv'):
+            response = self.client.post('/api/uploads/preview', headers=headers,
+                data={'file': (io.BytesIO(b'source\nhello\n'), name)})
+            self.assertEqual(response.status_code, 200)
+            uploads.append(response.get_json()['upload_id'])
+
+        response = self.client.delete('/api/uploads/' + uploads[0], headers=headers)
+        self.assertEqual(response.status_code, 200)
+        response = self.client.post('/api/jobs/clear', json={'project_id': 's06'}, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        payload = {'project_id': 'direct', 'language': 'english',
+                   'sheets': [{'name': 'CSV_Sheet', 'source': 'source', 'target': 'output', 'target_mode': 'new'}]}
+        removed = self.client.post('/api/jobs', json={**payload, 'upload_id': uploads[0]}, headers=headers)
+        remaining = self.client.post('/api/jobs', json={**payload, 'upload_id': uploads[1]}, headers=headers)
+        self.assertEqual(removed.status_code, 400)
+        self.assertEqual(remaining.status_code, 202, remaining.get_json())
+        self.assertEqual(remaining.get_json()['selected_sheets'], ['CSV_Sheet'])
+
     def test_project_job_cannot_use_anonymous_knowledge_when_login_disabled(self):
         self.client.get('/projects')
         payload = {'project_id': 's06', 'language': 'english',

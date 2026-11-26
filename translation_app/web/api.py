@@ -80,10 +80,14 @@ def upload_root():
     return path
 
 
-def upload_path(upload_id):
+def upload_folder(upload_id):
     if not isinstance(upload_id, str) or not re.fullmatch(r'[0-9a-f]{32}', upload_id):
         raise ValueError('上传文件不存在，请重新上传')
-    folder = upload_root() / upload_id
+    return upload_root() / upload_id
+
+
+def upload_path(upload_id):
+    folder = upload_folder(upload_id)
     try:
         meta = json.loads((folder / 'meta.json').read_text(encoding='utf-8'))
         if time.time() - meta['created'] > 24 * 3600:
@@ -94,6 +98,18 @@ def upload_path(upload_id):
         return path, meta
     except (OSError, KeyError, json.JSONDecodeError):
         raise ValueError('上传文件不存在，请重新上传')
+
+
+def expire_uploads():
+    now = time.time()
+    for path in upload_root().iterdir():
+        try:
+            if re.fullmatch(r'[0-9a-f]{32}', path.name) and now - path.stat().st_mtime > 24 * 3600:
+                shutil.rmtree(path, ignore_errors=True)
+            elif re.fullmatch(r'knowledge-[0-9a-f]{32}\.json', path.name) and now - path.stat().st_mtime > 3600:
+                path.unlink(missing_ok=True)
+        except FileNotFoundError:
+            continue
 
 
 def read_upload(file):
@@ -137,6 +153,15 @@ def preview_upload():
         raise
 
 
+@api.delete('/uploads/<upload_id>')
+def remove_upload(upload_id):
+    try:
+        shutil.rmtree(upload_folder(upload_id))
+    except FileNotFoundError:
+        pass
+    return jsonify(ok=True)
+
+
 @api.post('/jobs')
 def create_job():
     data = payload()
@@ -175,7 +200,7 @@ def create_job():
         for sheet in sheets:
             if not isinstance(sheet, dict) or not isinstance(sheet.get('name'), str) or sheet['name'] in mappings:
                 raise ValueError('工作表映射无效')
-            mappings[sheet['name']] = {k: sheet.get(k) for k in ('source', 'context', 'target')}
+            mappings[sheet['name']] = {k: sheet[k] for k in ('source', 'context', 'target', 'target_mode') if k in sheet}
         # Preview fully checked this private upload; avoid materializing it again.
         if not has_mapped_rows(path, mappings):
             raise ValueError('未找到需要翻译的文本')
@@ -221,8 +246,7 @@ def clear_jobs():
     project = payload().get('project_id')
     get_project(project)
     current_app.extensions['jobs'].clear_project(owner(), project)
-    # Uploads are temporary to the current browser/user, not project data.
-    shutil.rmtree(upload_root(), ignore_errors=True)
+    expire_uploads()
     return jsonify(ok=True)
 
 

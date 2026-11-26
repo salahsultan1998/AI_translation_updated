@@ -28,8 +28,20 @@
         <div class="segmented" role="group" aria-label="输入方式"><button type="button" class="selected" data-input="manual">手动输入</button><button type="button" data-input="file">文件上传</button></div>
       </div>
       <div id="file-input" hidden>
-        <div class="file-row"><label class="file-picker"><span class="upload-symbol" aria-hidden="true">↑</span><span><strong id="upload-name">选择文件</strong><small>CSV 或 XLSX</small></span><input id="file" type="file" accept=".csv,.xlsx"></label><button type="button" class="secondary" id="preview-file">上传并预览</button></div>
-        <div id="sheet-config" class="sheet-config" hidden><h3>选择工作表并配置列</h3><p class="muted small">每个工作表可单独配置列</p><div id="sheet-list"></div></div>
+        <div class="file-row">
+          <label class="file-picker" id="translation-file-picker"><span class="upload-symbol" aria-hidden="true">↑</span><span class="file-details"><strong id="upload-name" dir="auto">待翻译文件</strong><small id="upload-info">支持 CSV 和 XLSX</small></span><span class="button secondary compact" id="file-action">选择文件</span><input id="file" type="file" accept=".csv,.xlsx" aria-labelledby="file-action" aria-describedby="upload-name upload-info"></label>
+          <div class="file-actions">
+            <button type="button" class="text-button compact" id="remove-file" hidden>移除文件</button>
+            <button type="button" class="compact" id="preview-file" disabled>上传并预览</button>
+          </div>
+        </div>
+        <p id="file-status" class="muted small" role="status" hidden></p>
+        <div id="sheet-config" class="sheet-config" hidden>
+          <div class="sheet-config-heading"><h3>工作表与列配置</h3><span id="sheet-count" class="muted small"></span></div>
+          <div id="sheet-picker"></div>
+          <p id="sheet-problem" class="muted small" role="status" hidden></p>
+          <div id="sheet-list"></div>
+        </div>
       </div>
       <div id="manual-input">
         <div class="manual-actions" role="group" aria-label="表格操作">
@@ -46,7 +58,7 @@
         </div>
         <p id="manual-help" class="muted small"><span class="worksheet-scroll-hint">左右滑动查看整表。</span>选中单元格后可粘贴 Excel 区域。双击或按 <kbd>F2</kbd> 编辑单格，离开前请复制需要保留的译文。</p>
       </div>
-      <div class="translation-footer">
+      <div class="translation-footer" id="translation-footer">
         <details class="advanced">
           <summary>高级设置</summary>
           <div class="fields three">
@@ -62,9 +74,18 @@
           <button type="button" id="start-job">开始翻译</button>
         </div>
       </div>
-      <div id="job-status" class="job-status" hidden><div class="status-line"><span id="job-message" role="status" aria-live="polite"></span><span id="job-count" class="muted small"></span></div><progress id="job-progress" max="100" value="0" aria-label="翻译进度"></progress><button type="button" class="secondary compact" id="retry-job" hidden>继续未完成的翻译</button><p id="retry-note" class="muted small" hidden>已验证的结果会保留。超时或中断的请求可能已计费，继续翻译可能重复计费。请在刷新或离开页面前完成。</p><a class="button secondary compact" id="download" hidden>下载原始翻译文件（不含表格修改） ↓</a></div>
+      <div id="job-status" class="job-status" hidden><div class="status-line"><span id="job-message" role="status" aria-live="polite"></span><span id="job-count" class="muted small"></span></div><progress id="job-progress" max="100" value="0" aria-label="翻译进度"></progress><button type="button" class="secondary compact" id="retry-job" hidden>继续未完成的翻译</button><p id="retry-note" class="muted small" hidden>已验证的结果会保留。超时或中断的请求可能已计费，继续翻译可能重复计费。请在刷新或离开页面前完成。</p><a class="button secondary compact" id="manual-download" hidden>下载原始翻译文件（不含表格修改）</a></div>
     </section>
-    <section id="result-panel" class="panel" hidden><h2>翻译结果预览</h2><p id="result-note" class="muted small">每个工作表显示前十行；完整结果请下载文件。</p><div id="result-sheets"></div></section>
+    <section id="result-panel" class="panel" aria-labelledby="result-title" hidden>
+      <div class="result-heading">
+        <div><h2 id="result-title">翻译结果预览</h2><p id="result-file" class="muted small" dir="auto" hidden></p></div>
+        <a class="button compact" id="download" hidden>下载翻译文件</a>
+      </div>
+      <p id="result-note" class="muted small" role="status"></p>
+      <button type="button" class="secondary compact" id="retry-result" hidden>重新加载预览</button>
+      <div id="result-sheet-picker"></div>
+      <div id="result-sheets"></div>
+    </section>
   </div>
   <div id="config-panel" role="tabpanel" aria-labelledby="workspace-config-tab" hidden>
     <section class="panel prompt-panel">
@@ -79,5 +100,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/manual-grid.js', v='term-grid-1') }}" defer></script>
 {% if not project.direct %}<script src="{{ url_for('static', filename='js/knowledge.js', v='knowledge-6') }}" defer></script>{% endif %}
-<script src="{{ url_for('static', filename='js/workspace.js', v='localization-design-2') }}" defer></script>
+<script src="{{ url_for('static', filename='js/workspace.js', v='file-translation-1') }}" defer></script>
 {% endblock %}
