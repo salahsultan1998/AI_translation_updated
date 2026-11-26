@@ -6,10 +6,21 @@
   <meta name="csrf-token" content="{{ csrf_token }}">
   <title>{% block title %}AI 本地化工作台{% endblock %}</title>
   <link rel="icon" href="{{ url_for('static', filename='images/app-icon.svg') }}" type="image/svg+xml">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css', v='workspace-textarea-1') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css', v='localization-design-3') }}">
   {% block styles %}{% endblock %}
 </head>
 <body>
+  <header class="app-bar">
+    <div class="app-bar-inner">
+      <a class="brand" href="/projects"><img src="{{ url_for('static', filename='images/app-icon.svg') }}" alt="" width="36" height="36">AI 本地化工作台</a>
+      {% if auth_enabled and current_user_email is not none %}
+      <form method="post" action="/logout">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="text-button compact" type="submit">退出登录</button>
+      </form>
+      {% endif %}
+    </div>
+  </header>
   <div class="page">{% block content %}{% endblock %}</div>
   {% block scripts %}{% endblock %}
 </body>

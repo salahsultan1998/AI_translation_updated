@@ -2,9 +2,8 @@
 {% block title %}登录 · AI 本地化工作台{% endblock %}
 {% block content %}
 <main class="login-layout">
-  <div class="brand"><img src="{{ url_for('static', filename='images/app-icon.svg') }}" alt=""><span>AI 本地化工作台</span></div>
   <section class="panel login-panel" aria-labelledby="login-title">
-    <h1 id="login-title">欢迎回来</h1><p class="muted">登录后选择项目，开始本地化工作。</p>
+    <h1 id="login-title" class="title">登录工作台</h1><p class="muted">使用团队账号访问本地化项目</p>
     {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
     <form method="post" action="/login" class="stack">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

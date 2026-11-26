@@ -1,17 +1,34 @@
 {% extends "base.html" %}
 {% block content %}
-<header class="home-top">
-  <div class="home-heading"><img src="{{ url_for('static', filename='images/app-icon.svg') }}" alt=""><div><h1 class="title">AI 本地化工作台</h1><p class="muted heading-note">选择一个项目，开始翻译</p></div></div>
-  {% if auth_enabled %}<form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="secondary compact" type="submit">退出登录</button></form>{% endif %}
-</header>
-<main class="project-grid" aria-label="选择项目">
+<main class="projects" aria-labelledby="projects-title">
+  <header class="home-heading">
+    <h1 class="title" id="projects-title">选择工作区</h1>
+  </header>
   {% set direct = projects | selectattr('direct') | first %}
-  <a class="project-card" href="/direct"><span class="project-icon" aria-hidden="true"><img src="{{ url_for('static', filename=direct.icon) }}" alt=""></span><h2>{{ direct.name }}</h2><p>不关联项目，快速翻译文本</p></a>
-  {% for project in projects if project.id != 'direct' %}
-  {% if project.enabled %}<a class="project-card" href="/projects/{{ project.id }}">{% else %}<div class="project-card disabled" aria-disabled="true">{% endif %}
-    <span class="project-icon" aria-hidden="true">{% if project.icon %}<img src="{{ url_for('static', filename=project.icon) }}" alt="">{% else %}<span>{{ project.name[:1] }}</span>{% endif %}</span>
-    <h2>{{ project.name }}</h2><p>{% if project.enabled %}进入项目工作台{% else %}项目暂未开放{% endif %}</p>
-  {% if project.enabled %}</a>{% else %}</div>{% endif %}
-  {% endfor %}
+  <a class="direct-card" href="/direct" aria-labelledby="direct-title" aria-describedby="direct-description">
+    <div class="direct-card-heading">
+      <img src="{{ url_for('static', filename=direct.icon) }}" alt="" width="48" height="48">
+      <div>
+        <h2 id="direct-title">{{ direct.name }}</h2>
+        <p id="direct-description">输入文本或上传文件</p>
+      </div>
+    </div>
+    <span class="button compact direct-action">开始翻译 <span class="chevron" aria-hidden="true"></span></span>
+  </a>
+  <section class="game-section" aria-labelledby="game-projects-title">
+    <h2 id="game-projects-title">游戏项目</h2>
+    <div class="game-projects">
+      {% for project in projects if project.id != 'direct' %}
+      {% if project.enabled %}<a class="project-card" href="/projects/{{ project.id }}">{% else %}<div class="project-card disabled" aria-disabled="true">{% endif %}
+        <span class="project-icon" aria-hidden="true">{% if project.icon %}<img src="{{ url_for('static', filename=project.icon) }}" alt="" width="60" height="60">{% else %}{{ project.name[:1] }}{% endif %}</span>
+        <div class="project-card-label">
+          <h3>{{ project.name }}</h3>
+          {% if project.enabled %}<span class="chevron" aria-hidden="true"></span>{% endif %}
+        </div>
+        {% if not project.enabled %}<p class="muted small">项目暂未开放</p>{% endif %}
+      {% if project.enabled %}</a>{% else %}</div>{% endif %}
+      {% endfor %}
+    </div>
+  </section>
 </main>
 {% endblock %}

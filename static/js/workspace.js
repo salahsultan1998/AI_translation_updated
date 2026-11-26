@@ -15,9 +15,7 @@
   const library = isDirect ? null : window.createKnowledgeLibrary({
     panel: $('knowledge-panel'), projectId, language: $('language'), request, changed: refreshKnowledge
   });
-  const knowledgeStatus = node('p', '', 'muted small');
-  knowledgeStatus.setAttribute('role', 'status');
-  if (!isDirect) $('language').closest('section').insertAdjacentElement('afterend', knowledgeStatus);
+  const knowledgeStatus = $('knowledge-status');
   function preloadResources(language) {
     const existing = resourcePreloads.get(language);
     if (existing && existing.expires > Date.now()) {
@@ -147,7 +145,7 @@
     if (button.dataset.tab === 'config' && !$('config-panel').hidden) return;
     if (button.dataset.tab !== 'config' && !$('config-panel').hidden && promptsDirty() && !window.confirm('提示词有未保存的修改，确定离开吗？')) return;
     if (button.dataset.tab !== 'config' && !$('config-panel').hidden) { promptState.entries = {}; promptState.loading++; }
-    document.querySelectorAll('[data-tab]').forEach(other => { const active = other === button; other.classList.toggle('active', active); other.setAttribute('aria-selected', String(active)); });
+    document.querySelectorAll('[data-tab]').forEach(other => other.setAttribute('aria-selected', String(other === button)));
     $('translate-panel').hidden = button.dataset.tab !== 'translate';
     if ($('knowledge-panel')) $('knowledge-panel').hidden = button.dataset.tab !== 'knowledge';
     $('config-panel').hidden = button.dataset.tab !== 'config';
@@ -190,7 +188,7 @@
     clearMessages();
   });
   $('batch-mode').addEventListener('change', () => { $('batch-size-label').hidden = $('batch-mode').value !== 'manual'; });
-  $('file').addEventListener('change', () => { state.upload = null; $('sheet-config').hidden = true; $('upload-name').textContent = $('file').files[0]?.name || '点击选择文件'; });
+  $('file').addEventListener('change', () => { state.upload = null; $('sheet-config').hidden = true; $('upload-name').textContent = $('file').files[0]?.name || '选择文件'; });
   async function previewUpload(input) { if (!input.files[0]) throw new Error('请先选择文件。'); const body = new FormData(); body.append('file', input.files[0]); return request('/api/uploads/preview', { method: 'POST', body }); }
   function showSheets(data) {
     const container = $('sheet-list'); container.replaceChildren();
